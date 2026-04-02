@@ -21,6 +21,9 @@ import {
   updateAdminPassword,
 } from '../services/database';
 import { pickAndSaveImage, resolveImagePath } from '../services/storage';
+import * as XLSX from 'xlsx';
+import { save, confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
+import { writeFile } from '@tauri-apps/plugin-fs';
 
 const TABS = { QUESTIONS: 'questions', RECORDS: 'records', SETTINGS: 'settings' };
 
@@ -34,52 +37,185 @@ const PART_OPTIONS = [
 const PART_COLORS = { '1.1': '#6c63ff', '1.2': '#00c9a7', '2': '#f7971e', '3': '#fc5c7d' };
 const PART_LABELS = { '1.1': 'Part 1.1', '1.2': 'Part 1.2', '2': 'Part 2', '3': 'Part 3' };
 
-export default function AdminDashboard({ onLogout }) {
-  const [tab, setTab] = useState(TABS.QUESTIONS);
-  const [tests, setTests] = useState([]);
-  const [selectedTest, setSelectedTest] = useState(null);
-  const [questions, setQuestions] = useState([]);
-  const [sessions, setSessions] = useState([]);
-  const [students, setStudents] = useState([]);
-  const [loading, setLoading] = useState(true);
+const StudentAddForm = ({ onAdd }) => {
+  const [name, setName] = useState('');
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); if (name.trim()) { onAdd(name.trim()); setName(''); } }} style={{ display: 'flex', gap: '8px' }}>
+      <input 
+        type="text" 
+        placeholder="New student name" 
+        value={name} 
+        onChange={(e) => setName(e.target.value)} 
+        style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid var(--border-glass)', background: 'var(--bg-card)', color: 'var(--text-primary)' }}
+      />
+      <button type="submit" className="btn btn--primary btn--small" disabled={!name.trim()}>
+        + Add Student
+      </button>
+    </form>
+  );
+};
 
-  // Selection states
-  const [selectedTestIds, setSelectedTestIds] = useState([]);
-  const [selectedQuestionIds, setSelectedQuestionIds] = useState([]);
+const UpdateStudentPasswordForm = ({ onUpdate }) => {
+  const [val, setVal] = useState('');
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); onUpdate(val); setVal(''); }} className="admin__settings-form">
+      <input type="password" className="admin__settings-input" placeholder="New student password" value={val} onChange={(e) => setVal(e.target.value)} />
+      <button type="submit" className="btn btn--primary btn--small" disabled={val.length < 3}>Update Password</button>
+    </form>
+  );
+};
 
-  // Form states
-  const [showTestModal, setShowTestModal] = useState(false);
-  const [editingTestId, setEditingTestId] = useState(null);
-  const [testForm, setTestForm] = useState({ title: '', description: '' });
+const UpdateAdminPasswordForm = ({ onUpdate }) => {
+  const [val, setVal] = useState('');
+  return (
+    <form onSubmit={(e) => { e.preventDefault(); onUpdate(val); setVal(''); }} className="admin__settings-form">
+      <input type="password" className="admin__settings-input" placeholder="New admin password" value={val} onChange={(e) => setVal(e.target.value)} />
+      <button type="submit" className="btn btn--primary btn--small" disabled={val.length < 3}>Update Password</button>
+    </form>
+  );
+};
 
-  const [showQuestionModal, setShowQuestionModal] = useState(false);
-  const [editingQuestionId, setEditingQuestionId] = useState(null);
-  const [questionForm, setQuestionForm] = useState({
-    q_text: '', part: '1.1', image: '', speaking_timer: 30, prep_timer: 5,
-  });
+const TestModal = ({ initialData, isEditing, onSave, onClose }) => {
+  const [form, setForm] = useState(initialData || { title: '', description: '' });
+  return (
+    <div className="admin__modal-overlay" onClick={onClose}>
+      <div className="admin__modal" onClick={e => e.stopPropagation()}>
+        <div className="admin__modal-header">
+          <h2>{isEditing ? '✏️ Edit Test' : '➕ Create New Test'}</h2>
+          <button className="admin__modal-close" onClick={onClose}>✕</button>
+        </div>
+        <form className="admin__form" onSubmit={e => { e.preventDefault(); onSave(form); }}>
+          <div className="admin__form-grid">
+            <div className="admin__field admin__field--full">
+              <label>Test Title</label>
+              <input type="text" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="e.g. Mock Multilevel Test #1" required autoFocus />
+            </div>
+            <div className="admin__field admin__field--full">
+              <label>Description</label>
+              <textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Test details..." rows={2} />
+            </div>
+          </div>
+          <div className="admin__form-actions">
+            <button type="submit" className="btn btn--primary">{isEditing ? '💾 Update Test' : '➕ Create Test'}</button>
+            <button type="button" className="btn btn--ghost" onClick={onClose}>Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+const QuestionModal = ({ initialData, isEditing, onSave, onClose, onPickImage }) => {
+  const [form, setForm] = useState(initialData || { q_text: '', part: '1.1', image: '', speaking_timer: 30, prep_timer: 5 });
   const [previewImg, setPreviewImg] = useState(null);
 
   useEffect(() => {
     let active = true;
-    if (questionForm.image) {
-      resolveImagePath(questionForm.image).then(url => {
+    if (form.image) {
+      resolveImagePath(form.image).then(url => {
         if (active) setPreviewImg(url);
       });
     } else {
       setPreviewImg(null);
     }
     return () => { active = false; };
-  }, [questionForm.image]);
+  }, [form.image]);
+
+  const handlePickLocalImage = async () => {
+    const savedPath = await onPickImage();
+    if (savedPath) {
+      setForm({ ...form, image: savedPath });
+    }
+  };
+
+  return (
+    <div className="admin__modal-overlay" onClick={onClose}>
+      <div className="admin__modal admin__modal--large" onClick={e => e.stopPropagation()}>
+        <div className="admin__modal-header">
+          <h2>{isEditing ? '✏️ Edit Question' : '➕ Add Question'}</h2>
+          <button className="admin__modal-close" onClick={onClose}>✕</button>
+        </div>
+        <form className="admin__form" onSubmit={e => { e.preventDefault(); onSave(form); }}>
+          <div className="admin__form-grid">
+            <div className="admin__field admin__field--full">
+              <label>Question Text</label>
+              <textarea value={form.q_text} onChange={(e) => setForm({ ...form, q_text: e.target.value })} placeholder="Enter question..." rows={4} required autoFocus />
+            </div>
+            <div className="admin__field">
+              <label>Part</label>
+              <select value={form.part} onChange={(e) => setForm({ ...form, part: e.target.value })}>
+                {PART_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+              </select>
+            </div>
+            <div className="admin__field">
+              <label>Image (optional)</label>
+              <div className="admin__image-picker">
+                {form.image ? (
+                  <div className="admin__image-preview" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
+                    {previewImg && (
+                      <img src={previewImg} alt="Preview" style={{ maxHeight: 100, borderRadius: 4, marginBottom: 8 }} />
+                    )}
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <span className="admin__image-path">{form.image.split('/').pop()}</span>
+                      <button type="button" className="admin__image-clear" onClick={() => setForm({ ...form, image: '' })}>×</button>
+                    </div>
+                  </div>
+                ) : (
+                  <button type="button" className="btn btn--small btn--outline" onClick={handlePickLocalImage}>📁 Upload Image</button>
+                )}
+              </div>
+            </div>
+            <div className="admin__field">
+              <label>Preparation Time (seconds)</label>
+              <input type="number" min="0" max="300" value={form.prep_timer} onChange={(e) => setForm({ ...form, prep_timer: parseInt(e.target.value) || 0 })} />
+            </div>
+            <div className="admin__field">
+              <label>Speaking Time (seconds)</label>
+              <input type="number" min="0" max="300" value={form.speaking_timer} onChange={(e) => setForm({ ...form, speaking_timer: parseInt(e.target.value) || 0 })} />
+            </div>
+          </div>
+          <div className="admin__form-actions">
+            <button type="submit" className="btn btn--primary">{isEditing ? '💾 Update Question' : '➕ Save Question'}</button>
+            <button type="button" className="btn btn--ghost" onClick={onClose}>Cancel</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+export default function AdminDashboard({ onLogout }) {
+  const [tab, setTab] = useState(TABS.QUESTIONS);
+  const [tests, setTests] = useState([]);
+  const [sessions, setSessions] = useState([]);
+  const [students, setStudents] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  // Selection
+  const [selectedTest, setSelectedTest] = useState(null);
+  const [selectedTestIds, setSelectedTestIds] = useState([]);
+  const [selectedQuestionIds, setSelectedQuestionIds] = useState([]);
+  const [questions, setQuestions] = useState([]);
+
+  // Modals editing references
+  const [editingTestId, setEditingTestId] = useState(null);
+  const [showTestModal, setShowTestModal] = useState(false);
+  const [editingTestInitialData, setEditingTestInitialData] = useState(null);
+
+  const [editingQuestionId, setEditingQuestionId] = useState(null);
+  const [showQuestionModal, setShowQuestionModal] = useState(false);
+  const [editingQuestionInitialData, setEditingQuestionInitialData] = useState(null);
 
   // Session detail modal
   const [selectedSession, setSelectedSession] = useState(null);
   const [sessionDetails, setSessionDetails] = useState([]);
-  const [newStudentName, setNewStudentName] = useState('');
 
   // Settings
-  const [newStudentPassword, setNewStudentPassword] = useState('');
-  const [newPassword, setNewPassword] = useState('');
   const [settingsMsg, setSettingsMsg] = useState('');
+
+  // Bulk Upload
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = React.useRef(null);
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -109,25 +245,23 @@ export default function AdminDashboard({ onLogout }) {
 
   // ─── Test CRUD ──────────────────────────────────────────────
   const resetTestForm = () => {
-    setTestForm({ title: '', description: '' });
     setEditingTestId(null);
+    setEditingTestInitialData(null);
     setShowTestModal(false);
   };
 
   const handleEditTest = (t) => {
-    setTestForm({ title: t.title, description: t.description || '' });
+    setEditingTestInitialData({ title: t.title, description: t.description || '' });
     setEditingTestId(t.id);
     setShowTestModal(true);
   };
 
-  const handleSaveTest = async (e) => {
-    e.preventDefault();
-    if (!testForm.title.trim()) return;
+  const handleSaveTest = async (formData) => {
     try {
       if (editingTestId) {
-        await updateTest(editingTestId, testForm.title, testForm.description);
+        await updateTest(editingTestId, formData.title, formData.description);
       } else {
-        await addTest(testForm.title, testForm.description);
+        await addTest(formData.title, formData.description);
       }
       await loadData();
       resetTestForm();
@@ -137,14 +271,16 @@ export default function AdminDashboard({ onLogout }) {
   };
 
   const handleDeleteTest = async (id) => {
-    if (!confirm('Delete this test and all its questions?')) return;
+    const yes = await tauriConfirm('Delete this test and all its questions?', { title: 'Delete Test', kind: 'warning' });
+    if (!yes) return;
     await deleteTest(id);
     if (selectedTest?.id === id) setSelectedTest(null);
     await loadData();
   };
 
   const handleDeleteTests = async () => {
-    if (!confirm(`Delete ${selectedTestIds.length} selected tests and all their questions?`)) return;
+    const yes = await tauriConfirm(`Delete ${selectedTestIds.length} selected tests and all their questions?`, { title: 'Delete Tests', kind: 'warning' });
+    if (!yes) return;
     await deleteTests(selectedTestIds);
     if (selectedTestIds.includes(selectedTest?.id)) setSelectedTest(null);
     await loadData();
@@ -164,13 +300,13 @@ export default function AdminDashboard({ onLogout }) {
 
   // ─── Question CRUD ──────────────────────────────────────────
   const resetQuestionForm = () => {
-    setQuestionForm({ q_text: '', part: '1.1', image: '', speaking_timer: 30, prep_timer: 5 });
+    setEditingQuestionInitialData(null);
     setEditingQuestionId(null);
     setShowQuestionModal(false);
   };
 
   const handleEditQuestion = (q) => {
-    setQuestionForm({
+    setEditingQuestionInitialData({
       q_text: q.q_text,
       part: q.part,
       image: q.image || '',
@@ -181,14 +317,13 @@ export default function AdminDashboard({ onLogout }) {
     setShowQuestionModal(true);
   };
 
-  const handleSaveQuestion = async (e) => {
-    e.preventDefault();
-    if (!questionForm.q_text.trim() || !selectedTest) return;
+  const handleSaveQuestion = async (formData) => {
+    if (!selectedTest) return;
     try {
       if (editingQuestionId) {
-        await updateQuestion(editingQuestionId, questionForm);
+        await updateQuestion(editingQuestionId, formData);
       } else {
-        await addQuestion(selectedTest.id, questionForm);
+        await addQuestion(selectedTest.id, formData);
       }
       await loadData();
       resetQuestionForm();
@@ -198,30 +333,21 @@ export default function AdminDashboard({ onLogout }) {
   };
 
   const handleDeleteQuestion = async (id) => {
-    if (!confirm('Delete this question?')) return;
+    const yes = await tauriConfirm('Delete this question?', { title: 'Delete Question', kind: 'warning' });
+    if (!yes) return;
     await deleteQuestion(id);
     await loadData();
   };
 
   const handleDeleteQuestions = async () => {
-    if (!confirm(`Delete ${selectedQuestionIds.length} selected questions?`)) return;
+    const yes = await tauriConfirm(`Delete ${selectedQuestionIds.length} selected questions?`, { title: 'Delete Questions', kind: 'warning' });
+    if (!yes) return;
     await deleteQuestions(selectedQuestionIds);
     await loadData();
   };
 
   const toggleQuestionSelection = (id) => {
     setSelectedQuestionIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
-  };
-
-  const handlePickImage = async () => {
-    try {
-      const savedPath = await pickAndSaveImage();
-      if (savedPath) {
-        setQuestionForm({ ...questionForm, image: savedPath });
-      }
-    } catch (err) {
-      alert('Failed to pick and save image: ' + err.message);
-    }
   };
 
   // ─── Session Details ────────────────────────────────────────
@@ -232,50 +358,139 @@ export default function AdminDashboard({ onLogout }) {
   };
 
   const handleDeleteSession = async (id) => {
-    if (!confirm('Delete this test record?')) return;
+    const yes = await tauriConfirm('Delete this test record?', { title: 'Delete Record', kind: 'warning' });
+    if (!yes) return;
     await deleteTestSession(id);
     setSelectedSession(null);
     await loadData();
   };
 
   const handleDeleteStudent = async (id) => {
-    if (window.confirm('Delete this student? This removes all their past records forever.')) {
+    const yes = await tauriConfirm('Delete this student? This removes all their past records forever.', { title: 'Delete Student', kind: 'warning' });
+    if (yes) {
       await deleteStudent(id);
       loadData();
     }
   };
 
-  const handleAddStudent = async (e) => {
-    e.preventDefault();
-    if (!newStudentName.trim()) return;
-    await addStudent(newStudentName.trim());
-    setNewStudentName('');
+  const handleAddStudent = async (name) => {
+    if (!name.trim()) return;
+    await addStudent(name.trim());
     loadData();
   };
 
   // ─── Settings ───────────────────────────────────────────────
-  const handleUpdateStudentPassword = async (e) => {
-    e.preventDefault();
-    if (!newStudentPassword.trim()) {
+  const handleUpdateStudentPassword = async (pwd) => {
+    if (!pwd.trim()) {
       setSettingsMsg('Student password cannot be empty.');
       return;
     }
-    await updateStudentPassword(newStudentPassword);
-    setNewStudentPassword('');
+    await updateStudentPassword(pwd);
     setSettingsMsg('✅ Student password updated successfully.');
     setTimeout(() => setSettingsMsg(''), 3000);
   };
 
-  const handleUpdatePassword = async (e) => {
-    e.preventDefault();
-    if (newPassword.length < 3) {
+  const handleUpdateAdminPassword = async (pwd) => {
+    if (pwd.length < 3) {
       setSettingsMsg('Password must be at least 3 characters');
       return;
     }
-    await updateAdminPassword(newPassword);
-    setNewPassword('');
+    await updateAdminPassword(pwd);
     setSettingsMsg('✅ Admin password updated successfully');
     setTimeout(() => setSettingsMsg(''), 3000);
+  };
+
+  // ─── Bulk Upload ───────────────────────────────────────────────
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !selectedTest) return;
+
+    setIsUploading(true);
+    try {
+      const isJson = file.name.endsWith('.json');
+      const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
+
+      let parsedQuestions = [];
+
+      if (isJson) {
+        const text = await file.text();
+        parsedQuestions = JSON.parse(text);
+      } else if (isExcel) {
+        const buffer = await file.arrayBuffer();
+        const workbook = XLSX.read(buffer, { type: 'array' });
+        const sheetName = workbook.SheetNames[0];
+        const sheet = workbook.Sheets[sheetName];
+        parsedQuestions = XLSX.utils.sheet_to_json(sheet);
+      }
+
+      if (!Array.isArray(parsedQuestions)) {
+        if (parsedQuestions.questions && Array.isArray(parsedQuestions.questions)) {
+          parsedQuestions = parsedQuestions.questions;
+        } else {
+          throw new Error('Data is not an array');
+        }
+      }
+
+      let addedCount = 0;
+      for (const row of parsedQuestions) {
+        const qText = row.q_text || row.question || row.text || row.Question || row.Text || row['Question Text'];
+        if (!qText) continue;
+
+        let part = String(row.part || row.Part || '1.1');
+        if (part === '1' || part === '1.0') part = '1.1';
+        
+        const prep = parseInt(row.prep_timer || row.prep || row.Prep || row['Prep Timer']) || 5;
+        const speak = parseInt(row.speaking_timer || row.speak || row.Speak || row['Speaking Timer']) || 30;
+
+        await addQuestion(selectedTest.id, {
+          q_text: String(qText).trim(),
+          part: part,
+          image: null,
+          prep_timer: prep,
+          speaking_timer: speak
+        });
+        addedCount++;
+      }
+
+      alert(`✅ Successfully Bulk Uploaded ${addedCount} questions!`);
+      const updatedQs = await getQuestionsByTestId(selectedTest.id);
+      setQuestions(updatedQs);
+
+    } catch (err) {
+      console.error('Upload Error:', err);
+      alert('❌ Failed to parse file. Make sure it is a valid JSON or Excel file layout.');
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const handleDownloadTemplate = async () => {
+    try {
+      const data = [
+        { q_text: 'Describe a memorable journey you have made.', part: '2', prep_timer: 60, speaking_timer: 120 },
+        { q_text: 'What are the most popular modes of transport in your country?', part: '3', prep_timer: 0, speaking_timer: 30 },
+        { q_text: 'What is your full name?', part: '1.1', prep_timer: 5, speaking_timer: 20 }
+      ];
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Questions');
+      
+      const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      
+      const filePath = await save({
+        filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }],
+        defaultPath: 'Questions_Template.xlsx'
+      });
+
+      if (filePath) {
+        await writeFile(filePath, new Uint8Array(excelBuffer));
+        alert('✅ Template saved successfully!');
+      }
+    } catch (err) {
+      console.error('Save template error:', err);
+      alert('❌ Failed to save template. Please try again.');
+    }
   };
 
   const formatDate = (dateStr) => {
@@ -414,9 +629,24 @@ export default function AdminDashboard({ onLogout }) {
                       </button>
                     )}
                   </div>
-                  <button className="btn btn--primary" onClick={() => { resetQuestionForm(); setShowQuestionModal(true); }}>
-                    + Add Question
-                  </button>
+                  <div style={{ display: 'flex', gap: '12px' }}>
+                    <button className="btn btn--outline" onClick={handleDownloadTemplate}>
+                      ⬇️ Template
+                    </button>
+                    <input 
+                      type="file" 
+                      accept=".json, .xlsx, .xls" 
+                      style={{ display: 'none' }} 
+                      ref={fileInputRef} 
+                      onChange={handleFileUpload} 
+                    />
+                    <button className="btn btn--outline" onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
+                      {isUploading ? '⏳ Uploading...' : '📁 Bulk Upload'}
+                    </button>
+                    <button className="btn btn--primary" onClick={() => { resetQuestionForm(); setShowQuestionModal(true); }}>
+                      + Add Question
+                    </button>
+                  </div>
                 </div>
 
                 <div className="admin__table-wrapper">
@@ -515,18 +745,7 @@ export default function AdminDashboard({ onLogout }) {
                 <div className="admin__students-summary">
                   <div className="admin__section-title-group" style={{ justifyContent: 'space-between', marginBottom: 16 }}>
                     <h3 className="admin__students-title">Students ({students.length})</h3>
-                    <form onSubmit={handleAddStudent} style={{ display: 'flex', gap: '8px' }}>
-                      <input 
-                        type="text" 
-                        placeholder="New student name" 
-                        value={newStudentName} 
-                        onChange={(e) => setNewStudentName(e.target.value)} 
-                        style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid var(--border-glass)', background: 'var(--bg-card)', color: 'var(--text-primary)' }}
-                      />
-                      <button type="submit" className="btn btn--primary btn--small" disabled={!newStudentName.trim()}>
-                        + Add Student
-                      </button>
-                    </form>
+                    <StudentAddForm onAdd={handleAddStudent} />
                   </div>
                   {students.length > 0 && (
                     <div className="admin__students-list">
@@ -578,17 +797,11 @@ export default function AdminDashboard({ onLogout }) {
             <div className="admin__settings-grid">
               <div className="admin__settings-card">
                 <h3>🔢 Student Password</h3>
-                <form onSubmit={handleUpdateStudentPassword} className="admin__settings-form">
-                  <input type="password" className="admin__settings-input" placeholder="New student password" value={newStudentPassword} onChange={(e) => setNewStudentPassword(e.target.value)} />
-                  <button type="submit" className="btn btn--primary btn--small" disabled={newStudentPassword.length < 3}>Update Password</button>
-                </form>
+                <UpdateStudentPasswordForm onUpdate={handleUpdateStudentPassword} />
               </div>
               <div className="admin__settings-card">
-                <h3>🔑 Admin Password</h3>
-                <form onSubmit={handleUpdatePassword} className="admin__settings-form">
-                  <input type="password" className="admin__settings-input" placeholder="New password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} />
-                  <button type="submit" className="btn btn--primary btn--small" disabled={newPassword.length < 3}>Update Password</button>
-                </form>
+                <h3>🛡️ Admin Password</h3>
+                <UpdateAdminPasswordForm onUpdate={handleUpdateAdminPassword} />
               </div>
             </div>
           </div>
@@ -597,85 +810,30 @@ export default function AdminDashboard({ onLogout }) {
 
       {/* Modals */}
       {showTestModal && (
-        <div className="admin__modal-overlay" onClick={resetTestForm}>
-          <div className="admin__modal" onClick={e => e.stopPropagation()}>
-            <div className="admin__modal-header">
-              <h2>{editingTestId ? '✏️ Edit Test' : '➕ Create New Test'}</h2>
-              <button className="admin__modal-close" onClick={resetTestForm}>✕</button>
-            </div>
-            <form className="admin__form" onSubmit={handleSaveTest}>
-              <div className="admin__form-grid">
-                <div className="admin__field admin__field--full">
-                  <label>Test Title</label>
-                  <input type="text" value={testForm.title} onChange={(e) => setTestForm({ ...testForm, title: e.target.value })} placeholder="e.g. Mock Multilevel Test #1" required autoFocus />
-                </div>
-                <div className="admin__field admin__field--full">
-                  <label>Description</label>
-                  <textarea value={testForm.description} onChange={(e) => setTestForm({ ...testForm, description: e.target.value })} placeholder="Test details..." rows={2} />
-                </div>
-              </div>
-              <div className="admin__form-actions">
-                <button type="submit" className="btn btn--primary">{editingTestId ? '💾 Update Test' : '➕ Create Test'}</button>
-                <button type="button" className="btn btn--ghost" onClick={resetTestForm}>Cancel</button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <TestModal 
+          initialData={editingTestInitialData} 
+          isEditing={!!editingTestId} 
+          onSave={handleSaveTest} 
+          onClose={resetTestForm} 
+        />
       )}
 
       {showQuestionModal && (
-        <div className="admin__modal-overlay" onClick={resetQuestionForm}>
-          <div className="admin__modal admin__modal--large" onClick={e => e.stopPropagation()}>
-            <div className="admin__modal-header">
-              <h2>{editingQuestionId ? '✏️ Edit Question' : '➕ Add Question'}</h2>
-              <button className="admin__modal-close" onClick={resetQuestionForm}>✕</button>
-            </div>
-            <form className="admin__form" onSubmit={handleSaveQuestion}>
-              <div className="admin__form-grid">
-                <div className="admin__field admin__field--full">
-                  <label>Question Text</label>
-                  <textarea value={questionForm.q_text} onChange={(e) => setQuestionForm({ ...questionForm, q_text: e.target.value })} placeholder="Enter question..." rows={4} required autoFocus />
-                </div>
-                <div className="admin__field">
-                  <label>Part</label>
-                  <select value={questionForm.part} onChange={(e) => setQuestionForm({ ...questionForm, part: e.target.value })}>
-                    {PART_OPTIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
-                  </select>
-                </div>
-                <div className="admin__field">
-                  <label>Image (optional)</label>
-                  <div className="admin__image-picker">
-                    {questionForm.image ? (
-                      <div className="admin__image-preview" style={{ flexDirection: 'column', alignItems: 'flex-start' }}>
-                        {previewImg && (
-                          <img src={previewImg} alt="Preview" style={{ maxHeight: 100, borderRadius: 4, marginBottom: 8 }} />
-                        )}
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <span className="admin__image-path">{questionForm.image.split('/').pop()}</span>
-                          <button type="button" className="admin__image-clear" onClick={() => setQuestionForm({ ...questionForm, image: '' })}>×</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <button type="button" className="btn btn--small btn--outline" onClick={handlePickImage}>📁 Upload Image</button>
-                    )}
-                  </div>
-                </div>
-                <div className="admin__field">
-                  <label>Prep Timer (sec)</label>
-                  <input type="number" min="0" value={questionForm.prep_timer} onChange={(e) => setQuestionForm({ ...questionForm, prep_timer: parseInt(e.target.value) || 0 })} />
-                </div>
-                <div className="admin__field">
-                  <label>Speaking Timer (sec)</label>
-                  <input type="number" min="5" value={questionForm.speaking_timer} onChange={(e) => setQuestionForm({ ...questionForm, speaking_timer: parseInt(e.target.value) || 30 })} />
-                </div>
-              </div>
-              <div className="admin__form-actions">
-                <button type="submit" className="btn btn--primary">{editingQuestionId ? '💾 Update Question' : '➕ Add Question'}</button>
-                <button type="button" className="btn btn--ghost" onClick={resetQuestionForm}>Cancel</button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <QuestionModal 
+          initialData={editingQuestionInitialData}
+          isEditing={!!editingQuestionId}
+          onSave={handleSaveQuestion}
+          onClose={resetQuestionForm}
+          onPickImage={async () => {
+            try {
+              const savedPath = await pickAndSaveImage();
+              return savedPath;
+            } catch (err) {
+              alert('Failed to pick and save image: ' + err.message);
+              return null;
+            }
+          }}
+        />
       )}
     </div>
   );

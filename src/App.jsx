@@ -149,10 +149,6 @@ function App() {
 
   const handleAdminLogout = useCallback(async () => {
     await reloadData();
-    const pinSet = await isPinSet();
-    const adminSet = await isAdminPasswordSet();
-    setPinConfigured(pinSet);
-    setAdminConfigured(adminSet);
     setScreen(SCREENS.LOGIN);
   }, [reloadData]);
 

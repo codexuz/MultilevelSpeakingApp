@@ -1,0 +1,20 @@
+[
+  {
+    "q_text": "Describe a memorable journey you have made.",
+    "part": "2",
+    "prep_timer": 60,
+    "speaking_timer": 120
+  },
+  {
+    "q_text": "What are the most popular modes of transport in your country?",
+    "part": "3",
+    "prep_timer": 0,
+    "speaking_timer": 30
+  },
+  {
+    "q_text": "What is your full name?",
+    "part": "1.1",
+    "prep_timer": 5,
+    "speaking_timer": 20
+  }
+]
