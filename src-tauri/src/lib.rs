@@ -51,6 +51,30 @@ pub fn run() {
       ",
       kind: MigrationKind::Up,
     },
+    Migration {
+      version: 2,
+      description: "add tests table and link questions to tests",
+      sql: "
+        CREATE TABLE IF NOT EXISTS tests (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          description TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        -- Add test_id to questions
+        ALTER TABLE questions ADD COLUMN test_id INTEGER;
+        
+        -- Add test_id to test_sessions
+        ALTER TABLE test_sessions ADD COLUMN test_id INTEGER;
+
+        -- Create a default test and link existing questions to it
+        INSERT INTO tests (title, description) VALUES ('Mock Multilevel Test', 'Initial test created from existing questions');
+        UPDATE questions SET test_id = (SELECT id FROM tests ORDER BY id DESC LIMIT 1) WHERE test_id IS NULL;
+        UPDATE test_sessions SET test_id = (SELECT id FROM tests ORDER BY id DESC LIMIT 1) WHERE test_id IS NULL;
+      ",
+      kind: MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()

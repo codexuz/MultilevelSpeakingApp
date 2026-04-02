@@ -1,7 +1,7 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 
-export default function PinLogin({ onStudentLogin, onAdminLogin, isPinConfigured, isAdminConfigured }) {
-  const [pin, setPin] = useState('');
+export default function PinLogin({ onStudentLogin, onAdminLogin }) {
+  const [password, setPassword] = useState('');
   const [mode, setMode] = useState('student'); // 'student' | 'admin'
   const [error, setError] = useState('');
   const [shake, setShake] = useState(false);
@@ -9,61 +9,21 @@ export default function PinLogin({ onStudentLogin, onAdminLogin, isPinConfigured
   const [studentName, setStudentName] = useState('');
   const [showNameInput, setShowNameInput] = useState(false);
 
-  const maxLength = mode === 'student' ? 4 : 20;
-
-  const handleNumber = useCallback((num) => {
-    if (mode === 'admin') return; // admin uses text input
-    setError('');
-    setPin((prev) => {
-      if (prev.length >= maxLength) return prev;
-      return prev + num;
-    });
-  }, [mode, maxLength]);
-
-  const handleBackspace = useCallback(() => {
-    if (mode === 'admin') return;
-    setPin((prev) => prev.slice(0, -1));
-    setError('');
-  }, [mode]);
-
-  const handleClear = useCallback(() => {
-    setPin('');
-    setError('');
-  }, []);
-
   const triggerError = useCallback((msg) => {
     setError(msg);
     setShake(true);
     setTimeout(() => setShake(false), 500);
   }, []);
 
-  // Auto-submit when 4 digits entered (student mode)
-  useEffect(() => {
-    if (mode === 'student' && pin.length === 4) {
-      handleStudentSubmit(pin);
-    }
-  }, [pin, mode]);
-
-  const handleStudentSubmit = async (pinValue) => {
-    const p = pinValue || pin;
-    if (p.length < 4) {
-      triggerError('Enter 4-digit PIN');
+  const handleStudentSubmit = async (e) => {
+    if (e) e.preventDefault();
+    if (!password.trim()) {
+      triggerError('Enter student password');
       return;
     }
     
-    if (!isPinConfigured) {
-      // First time — show name input after setting PIN
-      setShowNameInput(true);
-      return;
-    }
-
-    const result = await onStudentLogin(p, studentName);
-    if (result === false) {
-      triggerError('Incorrect PIN');
-      setPin('');
-    } else {
-      setSuccess(true);
-    }
+    // Validated format, now require name
+    setShowNameInput(true);
   };
 
   const handleNameSubmit = async () => {
@@ -71,10 +31,10 @@ export default function PinLogin({ onStudentLogin, onAdminLogin, isPinConfigured
       triggerError('Please enter your name');
       return;
     }
-    const result = await onStudentLogin(pin, studentName.trim());
+    const result = await onStudentLogin(password, studentName.trim());
     if (result === false) {
-      triggerError('Incorrect PIN');
-      setPin('');
+      triggerError('Incorrect password');
+      setPassword('');
       setShowNameInput(false);
     } else {
       setSuccess(true);
@@ -83,14 +43,14 @@ export default function PinLogin({ onStudentLogin, onAdminLogin, isPinConfigured
 
   const handleAdminSubmit = async (e) => {
     e.preventDefault();
-    if (!pin.trim()) {
+    if (!password.trim()) {
       triggerError('Enter admin password');
       return;
     }
-    const result = await onAdminLogin(pin);
+    const result = await onAdminLogin(password);
     if (result === false) {
       triggerError('Incorrect password');
-      setPin('');
+      setPassword('');
     } else {
       setSuccess(true);
     }
@@ -156,7 +116,6 @@ export default function PinLogin({ onStudentLogin, onAdminLogin, isPinConfigured
       <div className="pin-login__glow pin-login__glow--2" />
 
       <div className={`pin-login__card ${shake ? 'shake' : ''}`}>
-        {/* Mode icons */}
         <div className="pin-login__icon">
           {mode === 'student' ? (
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="url(#lock-grad)" strokeWidth="1.5">
@@ -183,77 +142,38 @@ export default function PinLogin({ onStudentLogin, onAdminLogin, isPinConfigured
         </div>
 
         <h2 className="pin-login__title">
-          {mode === 'student' ? 'Enter PIN' : 'Admin Login'}
+          {mode === 'student' ? 'Student Login' : 'Admin Login'}
         </h2>
         <p className="pin-login__hint">
           {mode === 'student'
-            ? (isPinConfigured ? 'Enter your 4-digit PIN to continue' : 'Set your 4-digit PIN for first use')
-            : (isAdminConfigured ? 'Enter admin password' : 'Set admin password for first use')
+            ? 'Enter student password'
+            : 'Enter admin password'
           }
         </p>
 
-        {mode === 'student' ? (
-          <>
-            {/* PIN dots */}
-            <div className="pin-login__dots">
-              {[0, 1, 2, 3].map((i) => (
-                <div
-                  key={i}
-                  className={`pin-login__dot ${i < pin.length ? 'filled' : ''}`}
-                />
-              ))}
-            </div>
+        <form onSubmit={mode === 'student' ? handleStudentSubmit : handleAdminSubmit} className="pin-login__admin-form">
+          <input
+            type="password"
+            className="pin-login__text-input"
+            placeholder={mode === 'student' ? 'Student Password' : 'Admin Password'}
+            value={password}
+            onChange={(e) => { setPassword(e.target.value); setError(''); }}
+            autoFocus
+          />
+          {error && <p className="pin-login__error">{error}</p>}
+          <button type="submit" className="btn btn--start" style={{ width: '100%', justifyContent: 'center' }}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 8 }}>
+              <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
+              <polyline points="10 17 15 12 10 7" />
+              <line x1="15" y1="12" x2="3" y2="12" />
+            </svg>
+            Login
+          </button>
+        </form>
 
-            {error && <p className="pin-login__error">{error}</p>}
-
-            {/* Number pad */}
-            <div className="pin-login__numpad">
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
-                <button
-                  key={num}
-                  className="pin-login__key"
-                  onClick={() => handleNumber(String(num))}
-                >
-                  {num}
-                </button>
-              ))}
-              <button className="pin-login__key pin-login__key--action" onClick={handleClear}>
-                C
-              </button>
-              <button className="pin-login__key" onClick={() => handleNumber('0')}>
-                0
-              </button>
-              <button className="pin-login__key pin-login__key--action" onClick={handleBackspace}>
-                ⌫
-              </button>
-            </div>
-          </>
-        ) : (
-          <form onSubmit={handleAdminSubmit} className="pin-login__admin-form">
-            <input
-              type="password"
-              className="pin-login__text-input"
-              placeholder="Admin Password"
-              value={pin}
-              onChange={(e) => { setPin(e.target.value); setError(''); }}
-              autoFocus
-            />
-            {error && <p className="pin-login__error">{error}</p>}
-            <button type="submit" className="btn btn--start" style={{ width: '100%', justifyContent: 'center' }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" />
-                <polyline points="10 17 15 12 10 7" />
-                <line x1="15" y1="12" x2="3" y2="12" />
-              </svg>
-              Login
-            </button>
-          </form>
-        )}
-
-        {/* Toggle mode */}
         <button
           className="pin-login__toggle"
-          onClick={() => { setMode(mode === 'student' ? 'admin' : 'student'); setPin(''); setError(''); }}
+          onClick={() => { setMode(mode === 'student' ? 'admin' : 'student'); setPassword(''); setError(''); }}
         >
           {mode === 'student' ? '🛡️ Admin Panel' : '🎓 Student Login'}
         </button>
@@ -261,3 +181,4 @@ export default function PinLogin({ onStudentLogin, onAdminLogin, isPinConfigured
     </div>
   );
 }
+

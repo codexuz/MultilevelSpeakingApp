@@ -9,16 +9,18 @@ import AdminDashboard from './components/AdminDashboard';
 import { useTimer } from './hooks/useTimer';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
 import {
-  verifyPin,
+  verifyStudentPassword,
   verifyAdminPassword,
-  isPinSet,
-  isAdminPasswordSet,
   seedQuestionsFromJson,
   getAllQuestions,
+  getAllTests,
+  getQuestionsByTestId,
   addStudent,
   createTestSession,
   completeTestSession,
   saveTestAnswer,
+  updateStudentPassword,
+  updateAdminPassword,
 } from './services/database';
 
 const SCREENS = {
@@ -36,10 +38,10 @@ function App() {
   const [questionPhase, setQuestionPhase] = useState('idle');
   const [questions, setQuestions] = useState([]);
   const [dbReady, setDbReady] = useState(false);
-  const [pinConfigured, setPinConfigured] = useState(false);
-  const [adminConfigured, setAdminConfigured] = useState(false);
   const [currentStudentId, setCurrentStudentId] = useState(null);
   const [currentSessionId, setCurrentSessionId] = useState(null);
+  const [tests, setTests] = useState([]);
+  const [selectedTest, setSelectedTest] = useState(null);
 
   const timer = useTimer();
   const recorder = useAudioRecorder();
@@ -56,36 +58,33 @@ function App() {
         // Seed default questions from JSON on first run
         await seedQuestionsFromJson(initialQuestions);
         
-        // Load questions from DB
-        const dbQuestions = await getAllQuestions();
-        setQuestions(dbQuestions);
-
-        // Check if PIN and admin password are configured
-        const pinSet = await isPinSet();
-        const adminSet = await isAdminPasswordSet();
-        setPinConfigured(pinSet);
-        setAdminConfigured(adminSet);
+        // Load tests from DB
+        const dbTests = await getAllTests();
+        setTests(dbTests);
 
         setDbReady(true);
       } catch (err) {
         console.error('DB init error:', err);
-        // Fallback to JSON questions if DB fails
-        setQuestions(initialQuestions);
+        // Fallback or handle error
         setDbReady(true);
       }
     }
     init();
   }, []);
 
-  // Reload questions from DB (after admin changes)
-  const reloadQuestions = useCallback(async () => {
+  // Reload tests/questions from DB (after admin changes)
+  const reloadData = useCallback(async () => {
     try {
-      const dbQuestions = await getAllQuestions();
-      setQuestions(dbQuestions);
-    } catch {
-      setQuestions(initialQuestions);
+      const dbTests = await getAllTests();
+      setTests(dbTests);
+      if (selectedTest) {
+        const dbQuestions = await getQuestionsByTestId(selectedTest.id);
+        setQuestions(dbQuestions);
+      }
+    } catch (err) {
+      console.error('Reload error:', err);
     }
-  }, []);
+  }, [selectedTest]);
 
   // Speak question text using TTS
   const speakQuestion = useCallback((text) => {
@@ -122,8 +121,8 @@ function App() {
   }, []);
 
   // ─── Login Handlers ─────────────────────────────────────────
-  const handleStudentLogin = useCallback(async (pin, studentName) => {
-    const valid = await verifyPin(pin);
+  const handleStudentLogin = useCallback(async (password, studentName) => {
+    const valid = await verifyStudentPassword(password);
     if (!valid) return false;
 
     // Create or find student
@@ -133,42 +132,44 @@ function App() {
     }
     setCurrentStudentId(studentId);
     
-    // Reload questions from DB and check configs
-    await reloadQuestions();
-    const pinSet = await isPinSet();
-    setPinConfigured(pinSet);
+    // Reload data from DB
+    await reloadData();
 
     setScreen(SCREENS.HOME);
     return true;
-  }, [reloadQuestions]);
+  }, [reloadData]);
 
   const handleAdminLogin = useCallback(async (password) => {
     const valid = await verifyAdminPassword(password);
     if (!valid) return false;
-
-    const adminSet = await isAdminPasswordSet();
-    setAdminConfigured(adminSet);
 
     setScreen(SCREENS.ADMIN);
     return true;
   }, []);
 
   const handleAdminLogout = useCallback(async () => {
-    await reloadQuestions();
+    await reloadData();
     const pinSet = await isPinSet();
     const adminSet = await isAdminPasswordSet();
     setPinConfigured(pinSet);
     setAdminConfigured(adminSet);
     setScreen(SCREENS.LOGIN);
-  }, [reloadQuestions]);
+  }, [reloadData]);
 
   // ─── Test Flow ──────────────────────────────────────────────
+  const handleSelectTest = useCallback(async (test) => {
+    const testQs = await getQuestionsByTestId(test.id);
+    setQuestions(testQs);
+    setSelectedTest(test);
+  }, []);
+
   const handleStartTest = useCallback(async () => {
+    if (!selectedTest || questions.length === 0) return;
     autoStartedRef.current = false;
     
     // Create a test session
     if (currentStudentId) {
-      const sessionId = await createTestSession(currentStudentId, questions.length);
+      const sessionId = await createTestSession(currentStudentId, selectedTest.id, questions.length);
       setCurrentSessionId(sessionId);
     }
 
@@ -177,7 +178,7 @@ function App() {
     setTestStarted(false);
     setQuestionPhase('idle');
     timer.reset();
-  }, [timer, currentStudentId, questions.length]);
+  }, [timer, currentStudentId, questions.length, selectedTest]);
 
   // Auto-start question
   useEffect(() => {
@@ -267,6 +268,9 @@ function App() {
     setCurrentIndex(0);
     setTestStarted(false);
     setQuestionPhase('idle');
+    // Clear selected test to go back to list
+    setSelectedTest(null);
+    setQuestions([]);
   }, [timer]);
 
   const handleLogout = useCallback(() => {
@@ -278,6 +282,8 @@ function App() {
     setQuestionPhase('idle');
     setCurrentStudentId(null);
     setCurrentSessionId(null);
+    setSelectedTest(null);
+    setQuestions([]);
   }, [timer]);
 
   // ─── Loading State ─────────────────────────────────────────
@@ -299,8 +305,6 @@ function App() {
         <PinLogin
           onStudentLogin={handleStudentLogin}
           onAdminLogin={handleAdminLogin}
-          isPinConfigured={pinConfigured}
-          isAdminConfigured={adminConfigured}
         />
       </div>
     );
@@ -315,7 +319,7 @@ function App() {
     );
   }
 
-  // ─── HOME SCREEN ───────────────────────────────────────────
+  // ─── HOME SCREEN (Test List + Details) ─────────────────────
   if (screen === SCREENS.HOME) {
     return (
       <div className="app">
@@ -324,64 +328,101 @@ function App() {
           <div className="home-screen__glow home-screen__glow--2" />
 
           <div className="home-screen__content">
-            <div className="home-screen__icon">
-              <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="url(#mic-gradient)" strokeWidth="1.5">
-                <defs>
-                  <linearGradient id="mic-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
-                    <stop offset="0%" stopColor="#6c63ff" />
-                    <stop offset="100%" stopColor="#00e676" />
-                  </linearGradient>
-                </defs>
-                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                <line x1="12" y1="19" x2="12" y2="23" />
-                <line x1="8" y1="23" x2="16" y2="23" />
-              </svg>
-            </div>
-
-            <h1 className="home-screen__title">Speaking Practice</h1>
-            <p className="home-screen__subtitle">
-              Master your speaking skills with timed practice sessions.
-              <br />
-              {questions.length} questions across all parts.
-            </p>
-
-            <div className="home-screen__parts">
-              {[
-                { part: '1.1', label: 'Introduction', color: '#6c63ff', icon: '💬' },
-                { part: '1.2', label: 'Visual', color: '#00c9a7', icon: '🖼️' },
-                { part: '2', label: 'Long Turn', color: '#f7971e', icon: '🎤' },
-                { part: '3', label: 'Discussion', color: '#fc5c7d', icon: '💡' },
-              ].map((item) => (
-                <div key={item.part} className="home-screen__part-card">
-                  <span className="home-screen__part-icon">{item.icon}</span>
-                  <span className="home-screen__part-label" style={{ color: item.color }}>
-                    Part {item.part}
-                  </span>
-                  <span className="home-screen__part-name">{item.label}</span>
-                  <span className="home-screen__part-count">
-                    {questions.filter(q => q.part === item.part).length} questions
-                  </span>
+            {!selectedTest ? (
+              <>
+                <div className="home-screen__icon">
+                  <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="url(#mic-gradient)" strokeWidth="1.5">
+                    <defs>
+                      <linearGradient id="mic-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stopColor="#6c63ff" />
+                        <stop offset="100%" stopColor="#00e676" />
+                      </linearGradient>
+                    </defs>
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" y1="19" x2="12" y2="23" />
+                    <line x1="8" y1="23" x2="16" y2="23" />
+                  </svg>
                 </div>
-              ))}
-            </div>
+                <h1 className="home-screen__title">Select Your Test</h1>
+                <p className="home-screen__subtitle">Choose a practice test from the list below to begin.</p>
+                
+                <div className="home-screen__tests-grid">
+                  {tests.map(test => (
+                    <div key={test.id} className="home-screen__test-card" onClick={() => handleSelectTest(test)}>
+                      <div className="test-card__status">Available</div>
+                      <h3 className="test-card__title">{test.title}</h3>
+                      <p className="test-card__description">{test.description || 'Practice your speaking skills with this mock test.'}</p>
+                      <div className="test-card__footer">
+                        <span>Part 1, 2, 3</span>
+                        <div className="test-card__arrow">→</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
 
-            <div className="home-screen__actions">
-              <button className="btn btn--start" onClick={handleStartTest} disabled={questions.length === 0}>
-                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-                  <polygon points="5 3 19 12 5 21 5 3" />
-                </svg>
-                Start Practice Test
-              </button>
-              <button className="btn btn--ghost" onClick={handleLogout}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                  <polyline points="16 17 21 12 16 7" />
-                  <line x1="21" y1="12" x2="9" y2="12" />
-                </svg>
-                Logout
-              </button>
-            </div>
+                <div className="home-screen__actions">
+                  <button className="btn btn--ghost" onClick={handleLogout}>
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                      <polyline points="16 17 21 12 16 7" />
+                      <line x1="21" y1="12" x2="9" y2="12" />
+                    </svg>
+                    Logout
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="home-screen__icon">
+                  <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="url(#mic-gradient)" strokeWidth="1.5">
+                    <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <line x1="12" y1="19" x2="12" y2="23" />
+                    <line x1="8" y1="23" x2="16" y2="23" />
+                  </svg>
+                </div>
+
+                <h1 className="home-screen__title">{selectedTest.title}</h1>
+                <p className="home-screen__subtitle">
+                  {selectedTest.description || 'Master your speaking skills with timed practice sessions.'}
+                  <br />
+                  {questions.length} questions across all parts.
+                </p>
+
+                <div className="home-screen__parts">
+                  {[
+                    { part: '1.1', label: 'Introduction', color: '#6c63ff', icon: '💬' },
+                    { part: '1.2', label: 'Visual', color: '#00c9a7', icon: '🖼️' },
+                    { part: '2', label: 'Long Turn', color: '#f7971e', icon: '🎤' },
+                    { part: '3', label: 'Discussion', color: '#fc5c7d', icon: '💡' },
+                  ].map((item) => (
+                    <div key={item.part} className="home-screen__part-card">
+                      <span className="home-screen__part-icon">{item.icon}</span>
+                      <span className="home-screen__part-label" style={{ color: item.color }}>
+                        Part {item.part}
+                      </span>
+                      <span className="home-screen__part-name">{item.label}</span>
+                      <span className="home-screen__part-count">
+                        {questions.filter(q => q.part === item.part).length} questions
+                      </span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="home-screen__actions">
+                  <button className="btn btn--start" onClick={handleStartTest} disabled={questions.length === 0}>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                      <polygon points="5 3 19 12 5 21 5 3" />
+                    </svg>
+                    Start Test
+                  </button>
+                  <button className="btn btn--ghost" onClick={() => setSelectedTest(null)}>
+                    Back to Test List
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       </div>

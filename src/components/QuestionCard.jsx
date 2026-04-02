@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import { resolveImagePath } from '../services/storage';
 
 const PART_LABELS = {
   '1.1': 'Part 1 — Introduction',
@@ -15,6 +16,20 @@ const PART_COLORS = {
 };
 
 export default function QuestionCard({ question, isActive }) {
+  const [imgSrc, setImgSrc] = useState(null);
+
+  useEffect(() => {
+    let active = true;
+    if (question?.image) {
+      resolveImagePath(question.image).then(url => {
+        if (active) setImgSrc(url);
+      });
+    } else {
+      setImgSrc(null);
+    }
+    return () => { active = false; };
+  }, [question?.image]);
+
   if (!question) return null;
 
   return (
@@ -29,13 +44,14 @@ export default function QuestionCard({ question, isActive }) {
         <span className="question-card__number">Q{question.id}</span>
       </div>
 
-      {question.image && (
+      {imgSrc && (
         <div className="question-card__image-wrapper">
           <img
-            src={question.image}
+            src={imgSrc}
             alt="Visual prompt"
             className="question-card__image"
             loading="eager"
+            onError={() => console.error('Failed to load image:', imgSrc)}
           />
         </div>
       )}
