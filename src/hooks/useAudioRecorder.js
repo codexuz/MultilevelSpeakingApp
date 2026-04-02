@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
+import { save } from '@tauri-apps/plugin-dialog';
+import { writeFile } from '@tauri-apps/plugin-fs';
 
 export function useAudioRecorder() {
   const [isRecording, setIsRecording] = useState(false);
@@ -72,19 +74,34 @@ export function useAudioRecorder() {
     [recordings]
   );
 
-  const downloadRecording = useCallback((recording, filename) => {
-    const a = document.createElement('a');
-    a.href = recording.url;
-    a.download = filename || `recording-${recording.questionId}.webm`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+  const downloadRecording = useCallback(async (recording, filename) => {
+    try {
+      const defaultName = filename || `recording-${recording.questionId}.webm`;
+
+      // Open native save dialog
+      const filePath = await save({
+        defaultPath: defaultName,
+        filters: [
+          { name: 'Audio Files', extensions: ['webm'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      });
+
+      if (!filePath) return; // User cancelled
+
+      // Convert blob to Uint8Array and write via Tauri fs
+      const arrayBuffer = await recording.blob.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      await writeFile(filePath, bytes);
+    } catch (err) {
+      console.error('Failed to save recording:', err);
+    }
   }, []);
 
-  const downloadAll = useCallback(() => {
-    recordings.forEach((rec) => {
-      downloadRecording(rec, `question-${rec.questionId}.webm`);
-    });
+  const downloadAll = useCallback(async () => {
+    for (const rec of recordings) {
+      await downloadRecording(rec, `question-${rec.questionId}.webm`);
+    }
   }, [recordings, downloadRecording]);
 
   return {
@@ -98,3 +115,4 @@ export function useAudioRecorder() {
     downloadAll,
   };
 }
+

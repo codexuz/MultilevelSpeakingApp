@@ -1,23 +1,45 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import questions from './data/questions.json';
+import initialQuestions from './data/questions.json';
 import QuestionCard from './components/QuestionCard';
 import CircleTimer from './components/CircleTimer';
 import AudioVisualizer from './components/AudioVisualizer';
 import ResultsScreen from './components/ResultsScreen';
+import PinLogin from './components/PinLogin';
+import AdminDashboard from './components/AdminDashboard';
 import { useTimer } from './hooks/useTimer';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
+import {
+  verifyPin,
+  verifyAdminPassword,
+  isPinSet,
+  isAdminPasswordSet,
+  seedQuestionsFromJson,
+  getAllQuestions,
+  addStudent,
+  createTestSession,
+  completeTestSession,
+  saveTestAnswer,
+} from './services/database';
 
 const SCREENS = {
+  LOGIN: 'login',
   HOME: 'home',
   TEST: 'test',
   RESULTS: 'results',
+  ADMIN: 'admin',
 };
 
 function App() {
-  const [screen, setScreen] = useState(SCREENS.HOME);
+  const [screen, setScreen] = useState(SCREENS.LOGIN);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [testStarted, setTestStarted] = useState(false);
-  const [questionPhase, setQuestionPhase] = useState('idle'); // idle, reading, prep, speaking, done
+  const [questionPhase, setQuestionPhase] = useState('idle');
+  const [questions, setQuestions] = useState([]);
+  const [dbReady, setDbReady] = useState(false);
+  const [pinConfigured, setPinConfigured] = useState(false);
+  const [adminConfigured, setAdminConfigured] = useState(false);
+  const [currentStudentId, setCurrentStudentId] = useState(null);
+  const [currentSessionId, setCurrentSessionId] = useState(null);
 
   const timer = useTimer();
   const recorder = useAudioRecorder();
@@ -26,6 +48,44 @@ function App() {
   const isLastQuestion = currentIndex >= questions.length - 1;
   const ttsRef = useRef(null);
   const autoStartedRef = useRef(false);
+
+  // Initialize database
+  useEffect(() => {
+    async function init() {
+      try {
+        // Seed default questions from JSON on first run
+        await seedQuestionsFromJson(initialQuestions);
+        
+        // Load questions from DB
+        const dbQuestions = await getAllQuestions();
+        setQuestions(dbQuestions);
+
+        // Check if PIN and admin password are configured
+        const pinSet = await isPinSet();
+        const adminSet = await isAdminPasswordSet();
+        setPinConfigured(pinSet);
+        setAdminConfigured(adminSet);
+
+        setDbReady(true);
+      } catch (err) {
+        console.error('DB init error:', err);
+        // Fallback to JSON questions if DB fails
+        setQuestions(initialQuestions);
+        setDbReady(true);
+      }
+    }
+    init();
+  }, []);
+
+  // Reload questions from DB (after admin changes)
+  const reloadQuestions = useCallback(async () => {
+    try {
+      const dbQuestions = await getAllQuestions();
+      setQuestions(dbQuestions);
+    } catch {
+      setQuestions(initialQuestions);
+    }
+  }, []);
 
   // Speak question text using TTS
   const speakQuestion = useCallback((text) => {
@@ -36,12 +96,11 @@ function App() {
         utterance.rate = 0.9;
         utterance.pitch = 1;
         utterance.volume = 1;
-        
-        // Try to find an English voice
+
         const voices = window.speechSynthesis.getVoices();
         const englishVoice = voices.find(v => v.lang.startsWith('en-'));
         if (englishVoice) utterance.voice = englishVoice;
-        
+
         utterance.onend = resolve;
         utterance.onerror = resolve;
         ttsRef.current = utterance;
@@ -62,21 +121,68 @@ function App() {
     }
   }, []);
 
-  // Start the test
-  const handleStartTest = useCallback(() => {
+  // ─── Login Handlers ─────────────────────────────────────────
+  const handleStudentLogin = useCallback(async (pin, studentName) => {
+    const valid = await verifyPin(pin);
+    if (!valid) return false;
+
+    // Create or find student
+    let studentId = null;
+    if (studentName) {
+      studentId = await addStudent(studentName);
+    }
+    setCurrentStudentId(studentId);
+    
+    // Reload questions from DB and check configs
+    await reloadQuestions();
+    const pinSet = await isPinSet();
+    setPinConfigured(pinSet);
+
+    setScreen(SCREENS.HOME);
+    return true;
+  }, [reloadQuestions]);
+
+  const handleAdminLogin = useCallback(async (password) => {
+    const valid = await verifyAdminPassword(password);
+    if (!valid) return false;
+
+    const adminSet = await isAdminPasswordSet();
+    setAdminConfigured(adminSet);
+
+    setScreen(SCREENS.ADMIN);
+    return true;
+  }, []);
+
+  const handleAdminLogout = useCallback(async () => {
+    await reloadQuestions();
+    const pinSet = await isPinSet();
+    const adminSet = await isAdminPasswordSet();
+    setPinConfigured(pinSet);
+    setAdminConfigured(adminSet);
+    setScreen(SCREENS.LOGIN);
+  }, [reloadQuestions]);
+
+  // ─── Test Flow ──────────────────────────────────────────────
+  const handleStartTest = useCallback(async () => {
     autoStartedRef.current = false;
+    
+    // Create a test session
+    if (currentStudentId) {
+      const sessionId = await createTestSession(currentStudentId, questions.length);
+      setCurrentSessionId(sessionId);
+    }
+
     setScreen(SCREENS.TEST);
     setCurrentIndex(0);
     setTestStarted(false);
     setQuestionPhase('idle');
     timer.reset();
-  }, [timer]);
+  }, [timer, currentStudentId, questions.length]);
 
-  // Auto-start question when entering test screen or moving to next question
+  // Auto-start question
   useEffect(() => {
     if (screen === SCREENS.TEST && questionPhase === 'idle' && !autoStartedRef.current) {
       autoStartedRef.current = true;
-      // Small delay to let the UI render the question card first
       const timeout = setTimeout(() => {
         handleBeginQuestion();
       }, 800);
@@ -84,47 +190,49 @@ function App() {
     }
   }, [screen, questionPhase, currentIndex]);
 
-  // Auto-advance to next question when current one is done
+  // Auto-advance
   useEffect(() => {
     if (questionPhase === 'done') {
       const timeout = setTimeout(() => {
         handleNextQuestion();
-      }, 1500); // Brief pause so user sees "done" state
+      }, 1500);
       return () => clearTimeout(timeout);
     }
   }, [questionPhase]);
 
-  // Begin a question flow: TTS → prep timer → beep → speaking timer → beep
   const handleBeginQuestion = useCallback(async () => {
     if (!currentQuestion) return;
     setTestStarted(true);
     setQuestionPhase('reading');
 
-    // Read the question aloud
     await speakQuestion(currentQuestion.q_text);
-
     setQuestionPhase('prep');
 
-    // Start timer: prep → speaking
     timer.start(
       currentQuestion.prep_timer,
       currentQuestion.speaking_timer,
-      // On speaking start
       () => {
         setQuestionPhase('speaking');
         recorder.startRecording(currentQuestion.id);
       },
-      // On complete
-      () => {
+      async () => {
         setQuestionPhase('done');
         recorder.stopRecording();
+        
+        // Save answer to DB
+        if (currentSessionId) {
+          await saveTestAnswer(currentSessionId, currentQuestion.id, true);
+        }
       }
     );
-  }, [currentQuestion, speakQuestion, timer, recorder]);
+  }, [currentQuestion, speakQuestion, timer, recorder, currentSessionId]);
 
-  // Move to next question
   const handleNextQuestion = useCallback(() => {
     if (isLastQuestion) {
+      // Complete test session
+      if (currentSessionId) {
+        completeTestSession(currentSessionId, recorder.recordings.length);
+      }
       setScreen(SCREENS.RESULTS);
       setTestStarted(false);
       return;
@@ -134,21 +242,24 @@ function App() {
     setTestStarted(false);
     setQuestionPhase('idle');
     timer.reset();
-  }, [isLastQuestion, timer]);
+  }, [isLastQuestion, timer, currentSessionId, recorder.recordings.length]);
 
-  // Skip current (stop recording and move on)
-  const handleSkip = useCallback(() => {
+  const handleSkip = useCallback(async () => {
     window.speechSynthesis.cancel();
     timer.stop();
     recorder.stopRecording();
     setQuestionPhase('done');
-    
+
+    // Save skipped answer
+    if (currentSessionId && currentQuestion) {
+      await saveTestAnswer(currentSessionId, currentQuestion.id, false);
+    }
+
     setTimeout(() => {
       handleNextQuestion();
     }, 300);
-  }, [timer, recorder, handleNextQuestion]);
+  }, [timer, recorder, handleNextQuestion, currentSessionId, currentQuestion]);
 
-  // Restart
   const handleRestart = useCallback(() => {
     window.speechSynthesis.cancel();
     timer.reset();
@@ -158,7 +269,53 @@ function App() {
     setQuestionPhase('idle');
   }, [timer]);
 
-  // HOME SCREEN
+  const handleLogout = useCallback(() => {
+    window.speechSynthesis.cancel();
+    timer.reset();
+    setScreen(SCREENS.LOGIN);
+    setCurrentIndex(0);
+    setTestStarted(false);
+    setQuestionPhase('idle');
+    setCurrentStudentId(null);
+    setCurrentSessionId(null);
+  }, [timer]);
+
+  // ─── Loading State ─────────────────────────────────────────
+  if (!dbReady) {
+    return (
+      <div className="app">
+        <div className="app__loading">
+          <div className="admin__spinner" />
+          <span>Initializing...</span>
+        </div>
+      </div>
+    );
+  }
+
+  // ─── LOGIN SCREEN ──────────────────────────────────────────
+  if (screen === SCREENS.LOGIN) {
+    return (
+      <div className="app">
+        <PinLogin
+          onStudentLogin={handleStudentLogin}
+          onAdminLogin={handleAdminLogin}
+          isPinConfigured={pinConfigured}
+          isAdminConfigured={adminConfigured}
+        />
+      </div>
+    );
+  }
+
+  // ─── ADMIN SCREEN ─────────────────────────────────────────
+  if (screen === SCREENS.ADMIN) {
+    return (
+      <div className="app">
+        <AdminDashboard onLogout={handleAdminLogout} />
+      </div>
+    );
+  }
+
+  // ─── HOME SCREEN ───────────────────────────────────────────
   if (screen === SCREENS.HOME) {
     return (
       <div className="app">
@@ -191,10 +348,10 @@ function App() {
 
             <div className="home-screen__parts">
               {[
-                { part: '1.1', label: 'Introduction', count: questions.filter(q => q.part === '1.1').length, color: '#6c63ff', icon: '💬' },
-                { part: '1.2', label: 'Visual', count: questions.filter(q => q.part === '1.2').length, color: '#00c9a7', icon: '🖼️' },
-                { part: '2', label: 'Long Turn', count: questions.filter(q => q.part === '2').length, color: '#f7971e', icon: '🎤' },
-                { part: '3', label: 'Discussion', count: questions.filter(q => q.part === '3').length, color: '#fc5c7d', icon: '💡' },
+                { part: '1.1', label: 'Introduction', color: '#6c63ff', icon: '💬' },
+                { part: '1.2', label: 'Visual', color: '#00c9a7', icon: '🖼️' },
+                { part: '2', label: 'Long Turn', color: '#f7971e', icon: '🎤' },
+                { part: '3', label: 'Discussion', color: '#fc5c7d', icon: '💡' },
               ].map((item) => (
                 <div key={item.part} className="home-screen__part-card">
                   <span className="home-screen__part-icon">{item.icon}</span>
@@ -202,24 +359,36 @@ function App() {
                     Part {item.part}
                   </span>
                   <span className="home-screen__part-name">{item.label}</span>
-                  <span className="home-screen__part-count">{item.count} questions</span>
+                  <span className="home-screen__part-count">
+                    {questions.filter(q => q.part === item.part).length} questions
+                  </span>
                 </div>
               ))}
             </div>
 
-            <button className="btn btn--start" onClick={handleStartTest}>
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-                <polygon points="5 3 19 12 5 21 5 3" />
-              </svg>
-              Start Practice Test
-            </button>
+            <div className="home-screen__actions">
+              <button className="btn btn--start" onClick={handleStartTest} disabled={questions.length === 0}>
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="5 3 19 12 5 21 5 3" />
+                </svg>
+                Start Practice Test
+              </button>
+              <button className="btn btn--ghost" onClick={handleLogout}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                  <polyline points="16 17 21 12 16 7" />
+                  <line x1="21" y1="12" x2="9" y2="12" />
+                </svg>
+                Logout
+              </button>
+            </div>
           </div>
         </div>
       </div>
     );
   }
 
-  // RESULTS SCREEN
+  // ─── RESULTS SCREEN ────────────────────────────────────────
   if (screen === SCREENS.RESULTS) {
     return (
       <div className="app">
@@ -234,7 +403,7 @@ function App() {
     );
   }
 
-  // TEST SCREEN
+  // ─── TEST SCREEN ───────────────────────────────────────────
   return (
     <div className="app">
       <div className="test-screen">
@@ -258,10 +427,7 @@ function App() {
               />
             </div>
           </div>
-          <button
-            className="btn btn--ghost"
-            onClick={handleSkip}
-          >
+          <button className="btn btn--ghost" onClick={handleSkip}>
             Skip
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <line x1="5" y1="12" x2="19" y2="12" />

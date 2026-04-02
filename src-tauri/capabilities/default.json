@@ -6,6 +6,32 @@
     "main"
   ],
   "permissions": [
-    "core:default"
+    "core:default",
+    "dialog:default",
+    "dialog:allow-save",
+    "fs:default",
+    "fs:allow-desktop-write",
+    "fs:allow-download-write",
+    "fs:allow-home-write",
+    "fs:allow-app-write",
+    "sql:default",
+    {
+      "identifier": "sql:allow-execute",
+      "allow": [
+        "sqlite:speaking_app.db"
+      ]
+    },
+    {
+      "identifier": "sql:allow-select",
+      "allow": [
+        "sqlite:speaking_app.db"
+      ]
+    },
+    {
+      "identifier": "sql:allow-load",
+      "allow": [
+        "sqlite:speaking_app.db"
+      ]
+    }
   ]
 }
