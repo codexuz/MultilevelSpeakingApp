@@ -1,0 +1,66 @@
+[
+  {
+    "id": 1,
+    "q_text": "Tell me about your favorite TV program?",
+    "part": "1.1",
+    "image": null,
+    "speaking_timer": 30,
+    "prep_timer": 5
+  },
+  {
+    "id": 2,
+    "q_text": "Do you like watching TV alone or with other people?",
+    "part": "1.1",
+    "image": null,
+    "speaking_timer": 30,
+    "prep_timer": 5
+  },
+  {
+    "id": 3,
+    "q_text": "Do you often watch TV these days?",
+    "part": "1.1",
+    "image": null,
+    "speaking_timer": 30,
+    "prep_timer": 5
+  },
+  {
+    "id": 4,
+    "q_text": "Describe these pictures.",
+    "part": "1.2",
+    "image": "/test1.png",
+    "speaking_timer": 45,
+    "prep_timer": 10
+  },
+  {
+    "id": 5,
+    "q_text": "What are the advantages of running over playing chess?",
+    "part": "1.2",
+    "image": null,
+    "speaking_timer": 30,
+    "prep_timer": 5
+  },
+  {
+    "id": 6,
+    "q_text": "Which activity is more popular in your country? Running or chess?",
+    "part": "1.2",
+    "image": null,
+    "speaking_timer": 30,
+    "prep_timer": 5
+  },
+  {
+    "id": 7,
+    "q_text": "Tell me about the item you dreamed of owning. Did you get it? Is luxury items old people want to have different from the ones young people want to have?",
+    "part": "2",
+    "image": null,
+    "speaking_timer": 120,
+    "prep_timer": 60
+  },
+  {
+    "id": 8,
+    "q_text": "Governments should ban single-use plastics.",
+    "part": "3",
+    "image": "/test1_3.png",
+    "speaking_timer": 120,
+    "prep_timer": 60
+  }
+]
