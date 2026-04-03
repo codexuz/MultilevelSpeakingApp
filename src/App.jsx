@@ -8,6 +8,7 @@ import PinLogin from './components/PinLogin';
 import AdminDashboard from './components/AdminDashboard';
 import { useTimer } from './hooks/useTimer';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
+import { saveAudioRecording } from './services/storage';
 import {
   verifyStudentPassword,
   verifyAdminPassword,
@@ -214,11 +215,26 @@ function App() {
       },
       async () => {
         setQuestionPhase('done');
-        recorder.stopRecording();
+        const stoppedBlob = recorder.stopRecording();
         
-        // Save answer to DB
+        // Save answer to DB with recording path
         if (currentSessionId) {
-          await saveTestAnswer(currentSessionId, currentQuestion.id, true);
+          let recordingPath = null;
+          // Try to save the audio file persistently
+          try {
+            // Wait a short time for the blob to be assembled
+            await new Promise(r => setTimeout(r, 300));
+            const latestRecording = recorder.recordings[recorder.recordings.length];
+            // Find the recording that was just made
+            const recs = recorder.recordings;
+            const thisRec = recs.find(r => r.questionId === currentQuestion.id) || recs[recs.length - 1];
+            if (thisRec?.blob) {
+              recordingPath = await saveAudioRecording(thisRec.blob, currentQuestion.id, currentSessionId);
+            }
+          } catch (err) {
+            console.error('Failed to save audio file:', err);
+          }
+          await saveTestAnswer(currentSessionId, currentQuestion.id, true, recordingPath);
         }
       }
     );

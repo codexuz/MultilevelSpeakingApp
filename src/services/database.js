@@ -55,6 +55,31 @@ export async function getAllTests() {
   return await d.select('SELECT * FROM tests ORDER BY created_at DESC');
 }
 
+export async function getTestsPaginated(page = 1, limit = 10, search = '') {
+  const d = await getDb();
+  const offset = (page - 1) * limit;
+  
+  if (search.trim()) {
+    const searchLike = `%${search.trim()}%`;
+    const rows = await d.select(
+      `SELECT * FROM tests WHERE title LIKE $1 OR description LIKE $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+      [searchLike, limit, offset]
+    );
+    const countResult = await d.select(
+      `SELECT COUNT(*) as total FROM tests WHERE title LIKE $1 OR description LIKE $1`,
+      [searchLike]
+    );
+    return { rows, total: countResult[0].total };
+  }
+  
+  const rows = await d.select(
+    `SELECT * FROM tests ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  );
+  const countResult = await d.select(`SELECT COUNT(*) as total FROM tests`);
+  return { rows, total: countResult[0].total };
+}
+
 export async function addTest(title, description) {
   const d = await getDb();
   const result = await d.execute(
@@ -156,6 +181,31 @@ export async function getAllStudents() {
   return await d.select('SELECT * FROM students ORDER BY created_at DESC');
 }
 
+export async function getStudentsPaginated(page = 1, limit = 10, search = '') {
+  const d = await getDb();
+  const offset = (page - 1) * limit;
+  
+  if (search.trim()) {
+    const searchLike = `%${search.trim()}%`;
+    const rows = await d.select(
+      `SELECT * FROM students WHERE full_name LIKE $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
+      [searchLike, limit, offset]
+    );
+    const countResult = await d.select(
+      `SELECT COUNT(*) as total FROM students WHERE full_name LIKE $1`,
+      [searchLike]
+    );
+    return { rows, total: countResult[0].total };
+  }
+  
+  const rows = await d.select(
+    `SELECT * FROM students ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  );
+  const countResult = await d.select(`SELECT COUNT(*) as total FROM students`);
+  return { rows, total: countResult[0].total };
+}
+
 export async function addStudent(fullName) {
   const d = await getDb();
   const result = await d.execute(
@@ -188,11 +238,11 @@ export async function completeTestSession(sessionId, answeredCount) {
   );
 }
 
-export async function saveTestAnswer(sessionId, questionId, hasRecording = false) {
+export async function saveTestAnswer(sessionId, questionId, hasRecording = false, recordingPath = null) {
   const d = await getDb();
   await d.execute(
-    'INSERT INTO test_answers (session_id, question_id, has_recording) VALUES ($1, $2, $3)',
-    [sessionId, questionId, hasRecording ? 1 : 0]
+    'INSERT INTO test_answers (session_id, question_id, has_recording, recording_path) VALUES ($1, $2, $3, $4)',
+    [sessionId, questionId, hasRecording ? 1 : 0, recordingPath]
   );
 }
 
@@ -201,15 +251,67 @@ export async function getAllTestSessions() {
   return await d.select(`
     SELECT 
       ts.id,
+      ts.test_id,
       ts.started_at,
       ts.completed_at,
       ts.total_questions,
       ts.answered_questions,
-      s.full_name as student_name
+      s.full_name as student_name,
+      t.title as test_title
     FROM test_sessions ts
     JOIN students s ON ts.student_id = s.id
+    LEFT JOIN tests t ON ts.test_id = t.id
     ORDER BY ts.started_at DESC
   `);
+}
+
+export async function getTestSessionsFiltered(testId = null, search = '', page = 1, limit = 10) {
+  const d = await getDb();
+  const offset = (page - 1) * limit;
+  
+  let whereClause = '';
+  const params = [];
+  let paramIdx = 1;
+  
+  if (testId) {
+    whereClause += ` AND ts.test_id = $${paramIdx}`;
+    params.push(testId);
+    paramIdx++;
+  }
+  
+  if (search.trim()) {
+    whereClause += ` AND s.full_name LIKE $${paramIdx}`;
+    params.push(`%${search.trim()}%`);
+    paramIdx++;
+  }
+  
+  const rows = await d.select(`
+    SELECT 
+      ts.id,
+      ts.test_id,
+      ts.started_at,
+      ts.completed_at,
+      ts.total_questions,
+      ts.answered_questions,
+      s.full_name as student_name,
+      t.title as test_title
+    FROM test_sessions ts
+    JOIN students s ON ts.student_id = s.id
+    LEFT JOIN tests t ON ts.test_id = t.id
+    WHERE 1=1 ${whereClause}
+    ORDER BY ts.started_at DESC
+    LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
+  `, [...params, limit, offset]);
+  
+  const countResult = await d.select(`
+    SELECT COUNT(*) as total
+    FROM test_sessions ts
+    JOIN students s ON ts.student_id = s.id
+    LEFT JOIN tests t ON ts.test_id = t.id
+    WHERE 1=1 ${whereClause}
+  `, params);
+  
+  return { rows, total: countResult[0].total };
 }
 
 export async function getTestSessionDetails(sessionId) {
@@ -218,6 +320,7 @@ export async function getTestSessionDetails(sessionId) {
     SELECT 
       ta.id,
       ta.has_recording,
+      ta.recording_path,
       ta.answered_at,
       q.q_text,
       q.part

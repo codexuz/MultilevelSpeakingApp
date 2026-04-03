@@ -19,8 +19,11 @@ import {
   getSetting,
   updateStudentPassword,
   updateAdminPassword,
+  getTestsPaginated,
+  getStudentsPaginated,
+  getTestSessionsFiltered,
 } from '../services/database';
-import { pickAndSaveImage, resolveImagePath } from '../services/storage';
+import { pickAndSaveImage, resolveImagePath, resolveAudioPath } from '../services/storage';
 import * as XLSX from 'xlsx';
 import { save, confirm as tauriConfirm } from '@tauri-apps/plugin-dialog';
 import { writeFile } from '@tauri-apps/plugin-fs';
@@ -37,6 +40,96 @@ const PART_OPTIONS = [
 const PART_COLORS = { '1.1': '#6c63ff', '1.2': '#00c9a7', '2': '#f7971e', '3': '#fc5c7d' };
 const PART_LABELS = { '1.1': 'Part 1.1', '1.2': 'Part 1.2', '2': 'Part 2', '3': 'Part 3' };
 
+const PAGE_SIZE = 10;
+
+// ─── Custom hook for debounced values ────────────────────────
+function useDebounce(value, delay = 400) {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  return debouncedValue;
+}
+
+
+// ─── Reusable Pagination Component ─────────────────────────
+const Pagination = ({ currentPage, totalPages, onPageChange }) => {
+  if (totalPages <= 1) return null;
+
+  const getPages = () => {
+    const pages = [];
+    const start = Math.max(1, currentPage - 2);
+    const end = Math.min(totalPages, currentPage + 2);
+    
+    if (start > 1) {
+      pages.push(1);
+      if (start > 2) pages.push('...');
+    }
+    for (let i = start; i <= end; i++) pages.push(i);
+    if (end < totalPages) {
+      if (end < totalPages - 1) pages.push('...');
+      pages.push(totalPages);
+    }
+    return pages;
+  };
+
+  return (
+    <div className="pagination">
+      <button
+        className="pagination__btn"
+        disabled={currentPage <= 1}
+        onClick={() => onPageChange(currentPage - 1)}
+      >
+        ‹ Prev
+      </button>
+      <div className="pagination__pages">
+        {getPages().map((p, i) =>
+          p === '...' ? (
+            <span key={`dots-${i}`} className="pagination__dots">…</span>
+          ) : (
+            <button
+              key={p}
+              className={`pagination__page ${currentPage === p ? 'active' : ''}`}
+              onClick={() => onPageChange(p)}
+            >
+              {p}
+            </button>
+          )
+        )}
+      </div>
+      <button
+        className="pagination__btn"
+        disabled={currentPage >= totalPages}
+        onClick={() => onPageChange(currentPage + 1)}
+      >
+        Next ›
+      </button>
+    </div>
+  );
+};
+
+// ─── Search Input Component ─────────────────────────────────
+const SearchInput = ({ value, onChange, placeholder }) => (
+  <div className="search-input">
+    <svg className="search-input__icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+    <input
+      type="text"
+      className="search-input__field"
+      placeholder={placeholder || 'Search...'}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
+    {value && (
+      <button className="search-input__clear" onClick={() => onChange('')}>✕</button>
+    )}
+  </div>
+);
+
+// ─── Student Add Form ───────────────────────────────────────
 const StudentAddForm = ({ onAdd }) => {
   const [name, setName] = useState('');
   return (
@@ -184,6 +277,162 @@ const QuestionModal = ({ initialData, isEditing, onSave, onClose, onPickImage })
   );
 };
 
+// ─── Session Results Detail View (with audio playback) ──────
+const SessionResultsView = ({ session, onBack }) => {
+  const [details, setDetails] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [audioUrls, setAudioUrls] = useState({});
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      const d = await getTestSessionDetails(session.id);
+      if (!cancelled) {
+        setDetails(d);
+        setLoading(false);
+
+        // Resolve audio paths
+        const urls = {};
+        for (const answer of d) {
+          if (answer.recording_path) {
+            try {
+              const url = await resolveAudioPath(answer.recording_path);
+              if (url && !cancelled) {
+                urls[answer.id] = url;
+                setAudioUrls(prev => ({ ...prev, [answer.id]: url }));
+              }
+            } catch (err) {
+              console.error('Failed to resolve audio:', err);
+            }
+          }
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [session.id]);
+
+  const handleDeleteSession = async () => {
+    const yes = await tauriConfirm('Delete this test record and all its audio recordings?', { title: 'Delete Record', kind: 'warning' });
+    if (!yes) return;
+    await deleteTestSession(session.id);
+    onBack(true); // true = refresh needed
+  };
+
+  const formatDate = (dateStr) => {
+    if (!dateStr) return '—';
+    return new Date(dateStr + 'Z').toLocaleString('en-US', {
+      month: 'short', day: 'numeric', year: 'numeric',
+      hour: '2-digit', minute: '2-digit',
+    });
+  };
+
+  if (loading) {
+    return (
+      <div className="admin__loading">
+        <div className="admin__spinner" />
+        <span>Loading results...</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="session-results">
+      <button className="btn btn--ghost session-results__back" onClick={() => onBack(false)}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <line x1="19" y1="12" x2="5" y2="12" />
+          <polyline points="12 19 5 12 12 5" />
+        </svg>
+        Back to Records
+      </button>
+
+      {/* Session Header Card */}
+      <div className="session-results__header-card">
+        <div className="session-results__student-info">
+          <div className="session-results__avatar">
+            {session.student_name?.charAt(0)?.toUpperCase() || '?'}
+          </div>
+          <div>
+            <h2 className="session-results__name">{session.student_name}</h2>
+            <p className="session-results__test-name">
+              {session.test_title || 'Test'}
+            </p>
+          </div>
+        </div>
+        <div className="session-results__meta-row">
+          <div className="session-results__meta-item">
+            <span className="session-results__meta-label">Date</span>
+            <span className="session-results__meta-value">{formatDate(session.started_at)}</span>
+          </div>
+          <div className="session-results__meta-item">
+            <span className="session-results__meta-label">Score</span>
+            <span className="session-results__meta-value session-results__meta-value--accent">
+              {session.answered_questions} / {session.total_questions}
+            </span>
+          </div>
+          <div className="session-results__meta-item">
+            <span className="session-results__meta-label">Status</span>
+            <span className={`admin__stat-badge ${session.completed_at ? 'completed' : 'incomplete'}`}>
+              {session.completed_at ? '✅ Completed' : '⏳ Incomplete'}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Questions & Answers */}
+      <div className="session-results__questions">
+        <h3 className="session-results__section-title">
+          Questions & Responses ({details.length})
+        </h3>
+        {details.length === 0 ? (
+          <div className="admin__empty">
+            <span className="admin__empty-icon">📭</span>
+            <p>No answers recorded for this session.</p>
+          </div>
+        ) : (
+          details.map((answer, i) => (
+            <div key={answer.id} className="session-results__answer-card">
+              <div className="session-results__answer-header">
+                <div className="session-results__answer-left">
+                  <span className="session-results__answer-num">{i + 1}</span>
+                  <span
+                    className="admin__question-badge"
+                    style={{ background: PART_COLORS[answer.part], fontSize: '0.65rem' }}
+                  >
+                    {PART_LABELS[answer.part]}
+                  </span>
+                </div>
+                <span className={`admin__answer-status ${answer.has_recording ? 'recorded' : 'skipped'}`}>
+                  {answer.has_recording ? '🎤 Recorded' : '⏭️ Skipped'}
+                </span>
+              </div>
+              <p className="session-results__question-text">{answer.q_text}</p>
+              {answer.has_recording && audioUrls[answer.id] ? (
+                <div className="session-results__audio-player">
+                  <audio controls src={audioUrls[answer.id]} className="session-results__audio" />
+                </div>
+              ) : answer.has_recording && answer.recording_path ? (
+                <div className="session-results__audio-loading">
+                  <div className="admin__spinner" style={{ width: 16, height: 16 }} />
+                  <span>Loading audio...</span>
+                </div>
+              ) : answer.has_recording ? (
+                <div className="session-results__no-file">
+                  <span>🎤 Audio was recorded but file is not available</span>
+                </div>
+              ) : null}
+            </div>
+          ))
+        )}
+      </div>
+
+      <button className="btn btn--small admin__btn-delete" onClick={handleDeleteSession} style={{ marginTop: 16 }}>
+        🗑️ Delete this record
+      </button>
+    </div>
+  );
+};
+
 export default function AdminDashboard({ onLogout }) {
   const [tab, setTab] = useState(TABS.QUESTIONS);
   const [tests, setTests] = useState([]);
@@ -206,9 +455,8 @@ export default function AdminDashboard({ onLogout }) {
   const [showQuestionModal, setShowQuestionModal] = useState(false);
   const [editingQuestionInitialData, setEditingQuestionInitialData] = useState(null);
 
-  // Session detail modal
+  // Session detail view
   const [selectedSession, setSelectedSession] = useState(null);
-  const [sessionDetails, setSessionDetails] = useState([]);
 
   // Settings
   const [settingsMsg, setSettingsMsg] = useState('');
@@ -217,31 +465,98 @@ export default function AdminDashboard({ onLogout }) {
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = React.useRef(null);
 
+  // ─── Pagination & Search State ──────────────────────────────
+  // Tests
+  const [testSearch, setTestSearch] = useState('');
+  const [testPage, setTestPage] = useState(1);
+  const [testTotal, setTestTotal] = useState(0);
+
+  // Students
+  const [studentSearch, setStudentSearch] = useState('');
+  const [studentPage, setStudentPage] = useState(1);
+  const [studentTotal, setStudentTotal] = useState(0);
+
+  // Sessions / Records
+  const [recordSearch, setRecordSearch] = useState('');
+  const [recordTestFilter, setRecordTestFilter] = useState('');
+  const [recordPage, setRecordPage] = useState(1);
+  const [recordTotal, setRecordTotal] = useState(0);
+  const [allTests, setAllTests] = useState([]); // for filter dropdown
+
+  // ─── Debounced search ──────────────────────────────────────
+
+  const debouncedTestSearch = useDebounce(testSearch);
+  const debouncedStudentSearch = useDebounce(studentSearch);
+  const debouncedRecordSearch = useDebounce(recordSearch);
+
+  // ─── Data Loaders ──────────────────────────────────────────
+  const loadTests = useCallback(async () => {
+    try {
+      const result = await getTestsPaginated(testPage, PAGE_SIZE, debouncedTestSearch);
+      setTests(result.rows);
+      setTestTotal(result.total);
+    } catch (err) {
+      console.error('Failed to load tests:', err);
+    }
+  }, [testPage, debouncedTestSearch]);
+
+  const loadStudents = useCallback(async () => {
+    try {
+      const result = await getStudentsPaginated(studentPage, PAGE_SIZE, debouncedStudentSearch);
+      setStudents(result.rows);
+      setStudentTotal(result.total);
+    } catch (err) {
+      console.error('Failed to load students:', err);
+    }
+  }, [studentPage, debouncedStudentSearch]);
+
+  const loadSessions = useCallback(async () => {
+    try {
+      const result = await getTestSessionsFiltered(
+        recordTestFilter || null,
+        debouncedRecordSearch,
+        recordPage,
+        PAGE_SIZE
+      );
+      setSessions(result.rows);
+      setRecordTotal(result.total);
+    } catch (err) {
+      console.error('Failed to load sessions:', err);
+    }
+  }, [recordPage, debouncedRecordSearch, recordTestFilter]);
+
+  const loadAllTests = useCallback(async () => {
+    try {
+      const t = await getAllTests();
+      setAllTests(t);
+    } catch (err) {
+      console.error('Failed to load all tests for filter:', err);
+    }
+  }, []);
+
   const loadData = useCallback(async () => {
     setLoading(true);
-    try {
-      const [t, s, st] = await Promise.all([
-        getAllTests(),
-        getAllTestSessions(),
-        getAllStudents(),
-      ]);
-      setTests(t);
-      setSessions(s);
-      setStudents(st);
+    await Promise.all([loadTests(), loadStudents(), loadSessions(), loadAllTests()]);
 
-      if (selectedTest) {
+    if (selectedTest) {
+      try {
         const q = await getQuestionsByTestId(selectedTest.id);
         setQuestions(q);
+      } catch (err) {
+        console.error('Failed to load questions:', err);
       }
-    } catch (err) {
-      console.error('Failed to load data:', err);
     }
     setLoading(false);
     setSelectedTestIds([]);
     setSelectedQuestionIds([]);
-  }, [selectedTest]);
+  }, [selectedTest, loadTests, loadStudents, loadSessions, loadAllTests]);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Reset page when search changes
+  useEffect(() => { setTestPage(1); }, [debouncedTestSearch]);
+  useEffect(() => { setStudentPage(1); }, [debouncedStudentSearch]);
+  useEffect(() => { setRecordPage(1); }, [debouncedRecordSearch, recordTestFilter]);
 
   // ─── Test CRUD ──────────────────────────────────────────────
   const resetTestForm = () => {
@@ -350,21 +665,7 @@ export default function AdminDashboard({ onLogout }) {
     setSelectedQuestionIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
-  // ─── Session Details ────────────────────────────────────────
-  const handleViewSession = async (session) => {
-    setSelectedSession(session);
-    const details = await getTestSessionDetails(session.id);
-    setSessionDetails(details);
-  };
-
-  const handleDeleteSession = async (id) => {
-    const yes = await tauriConfirm('Delete this test record?', { title: 'Delete Record', kind: 'warning' });
-    if (!yes) return;
-    await deleteTestSession(id);
-    setSelectedSession(null);
-    await loadData();
-  };
-
+  // ─── Students ──────────────────────────────────────────────
   const handleDeleteStudent = async (id) => {
     const yes = await tauriConfirm('Delete this student? This removes all their past records forever.', { title: 'Delete Student', kind: 'warning' });
     if (yes) {
@@ -501,6 +802,54 @@ export default function AdminDashboard({ onLogout }) {
     });
   };
 
+  const testTotalPages = Math.ceil(testTotal / PAGE_SIZE);
+  const studentTotalPages = Math.ceil(studentTotal / PAGE_SIZE);
+  const recordTotalPages = Math.ceil(recordTotal / PAGE_SIZE);
+
+  // ─── Render: Session Results Detail Page ────────────────────
+  if (selectedSession) {
+    return (
+      <div className="admin">
+        <div className="admin__glow admin__glow--1" />
+        <div className="admin__glow admin__glow--2" />
+        {/* Header */}
+        <div className="admin__header">
+          <div className="admin__header-left">
+            <div className="admin__logo">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="url(#admin-grad)" strokeWidth="1.5">
+                <defs>
+                  <linearGradient id="admin-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                    <stop offset="0%" stopColor="#f7971e" />
+                    <stop offset="100%" stopColor="#fc5c7d" />
+                  </linearGradient>
+                </defs>
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              </svg>
+            </div>
+            <h1 className="admin__title">Student Results</h1>
+          </div>
+          <button className="btn btn--ghost" onClick={onLogout}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+            Logout
+          </button>
+        </div>
+        <div className="admin__content">
+          <SessionResultsView
+            session={selectedSession}
+            onBack={(needsRefresh) => {
+              setSelectedSession(null);
+              if (needsRefresh) loadData();
+            }}
+          />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="admin">
       <div className="admin__glow admin__glow--1" />
@@ -535,8 +884,8 @@ export default function AdminDashboard({ onLogout }) {
       {/* Tabs */}
       <div className="admin__tabs">
         {[
-          { key: TABS.QUESTIONS, label: 'Tests & Questions', icon: '📝', count: selectedTest ? questions.length : tests.length },
-          { key: TABS.RECORDS, label: 'Test Records', icon: '📊', count: sessions.length },
+          { key: TABS.QUESTIONS, label: 'Tests & Questions', icon: '📝', count: selectedTest ? questions.length : testTotal },
+          { key: TABS.RECORDS, label: 'Test Records', icon: '📊', count: recordTotal },
           { key: TABS.SETTINGS, label: 'Settings', icon: '⚙️' },
         ].map((t) => (
           <button
@@ -574,16 +923,23 @@ export default function AdminDashboard({ onLogout }) {
                       </button>
                     )}
                   </div>
-                  <button className="btn btn--primary" onClick={() => { resetTestForm(); setShowTestModal(true); }}>
-                    + Create New Test
-                  </button>
+                  <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                    <SearchInput
+                      value={testSearch}
+                      onChange={(val) => setTestSearch(val)}
+                      placeholder="Search tests..."
+                    />
+                    <button className="btn btn--primary" onClick={() => { resetTestForm(); setShowTestModal(true); }}>
+                      + Create New Test
+                    </button>
+                  </div>
                 </div>
 
                 <div className="admin__list">
                   {tests.length === 0 ? (
                     <div className="admin__empty">
                       <span className="admin__empty-icon">📝</span>
-                      <p>No tests yet. Create your first test!</p>
+                      <p>{debouncedTestSearch ? 'No tests match your search.' : 'No tests yet. Create your first test!'}</p>
                     </div>
                   ) : (
                     tests.map((t) => (
@@ -600,7 +956,6 @@ export default function AdminDashboard({ onLogout }) {
                           <p className="admin__test-desc">{t.description || 'No description'}</p>
                           <div className="admin__question-meta">
                             <span>📅 Created: {formatDate(t.created_at)}</span>
-                            <span>📋 {t.q_count || 0} Questions</span>
                           </div>
                         </div>
                         <div className="admin__question-actions" onClick={e => e.stopPropagation()}>
@@ -611,6 +966,12 @@ export default function AdminDashboard({ onLogout }) {
                     ))
                   )}
                 </div>
+
+                <Pagination
+                  currentPage={testPage}
+                  totalPages={testTotalPages}
+                  onPageChange={setTestPage}
+                />
               </>
             ) : (
               <>
@@ -707,86 +1068,112 @@ export default function AdminDashboard({ onLogout }) {
         ) : tab === TABS.RECORDS ? (
           <div className="admin__section">
             <h2>Student Test Records</h2>
-            {selectedSession ? (
-              <div className="admin__detail-view">
-                <button className="btn btn--ghost" onClick={() => setSelectedSession(null)}>← Back to all records</button>
-                <div className="admin__detail-header">
-                  <h3>{selectedSession.student_name}</h3>
-                  <p className="admin__detail-date">{formatDate(selectedSession.started_at)}</p>
-                  <div className="admin__detail-stats">
-                    <span className="admin__stat">
-                      <strong>{selectedSession.answered_questions}</strong> / {selectedSession.total_questions} answered
-                    </span>
-                    <span className={`admin__stat-badge ${selectedSession.completed_at ? 'completed' : 'incomplete'}`}>
-                      {selectedSession.completed_at ? '✅ Completed' : '⏳ Incomplete'}
-                    </span>
+            
+            {/* Students Section with Search & Pagination */}
+            <div className="admin__students-summary">
+              <div className="admin__section-title-group" style={{ justifyContent: 'space-between', marginBottom: 16 }}>
+                <h3 className="admin__students-title">Students ({studentTotal})</h3>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <SearchInput
+                    value={studentSearch}
+                    onChange={setStudentSearch}
+                    placeholder="Search students..."
+                  />
+                  <StudentAddForm onAdd={handleAddStudent} />
+                </div>
+              </div>
+              {students.length > 0 && (
+                <>
+                  <div className="admin__students-list">
+                    {students.map((s) => (
+                      <div key={s.id} className="admin__student-chip">
+                        <span>{s.full_name}</span>
+                        <button className="admin__student-remove" onClick={() => handleDeleteStudent(s.id)}>×</button>
+                      </div>
+                    ))}
                   </div>
-                </div>
-                <div className="admin__detail-answers">
-                  {sessionDetails.map((a, i) => (
-                    <div key={a.id} className="admin__answer-row">
-                      <span className="admin__answer-num">{i + 1}</span>
-                      <span className="admin__question-badge" style={{ background: PART_COLORS[a.part], fontSize: '0.65rem' }}>
-                        {PART_LABELS[a.part]}
-                      </span>
-                      <span className="admin__answer-text">{a.q_text}</span>
-                      <span className={`admin__answer-status ${a.has_recording ? 'recorded' : 'skipped'}`}>
-                        {a.has_recording ? '🎤 Recorded' : '⏭️ Skipped'}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-                <button className="btn btn--small admin__btn-delete" onClick={() => handleDeleteSession(selectedSession.id)} style={{ marginTop: 16 }}>
-                  🗑️ Delete this record
-                </button>
+                  <Pagination
+                    currentPage={studentPage}
+                    totalPages={studentTotalPages}
+                    onPageChange={setStudentPage}
+                  />
+                </>
+              )}
+            </div>
+
+            {/* Records Filter Bar */}
+            <div className="records-filter-bar">
+              <SearchInput
+                value={recordSearch}
+                onChange={setRecordSearch}
+                placeholder="Search by student name..."
+              />
+              <select
+                className="records-filter-bar__select"
+                value={recordTestFilter}
+                onChange={(e) => setRecordTestFilter(e.target.value)}
+              >
+                <option value="">All Tests</option>
+                {allTests.map((t) => (
+                  <option key={t.id} value={t.id}>{t.title}</option>
+                ))}
+              </select>
+            </div>
+            
+            {sessions.length === 0 ? (
+              <div className="admin__empty">
+                <span className="admin__empty-icon">📊</span>
+                <p>{(debouncedRecordSearch || recordTestFilter) ? 'No records match your filters.' : 'No records yet.'}</p>
               </div>
             ) : (
               <>
-                <div className="admin__students-summary">
-                  <div className="admin__section-title-group" style={{ justifyContent: 'space-between', marginBottom: 16 }}>
-                    <h3 className="admin__students-title">Students ({students.length})</h3>
-                    <StudentAddForm onAdd={handleAddStudent} />
-                  </div>
-                  {students.length > 0 && (
-                    <div className="admin__students-list">
-                      {students.map((s) => (
-                        <div key={s.id} className="admin__student-chip">
-                          <span>{s.full_name}</span>
-                          <button className="admin__student-remove" onClick={() => handleDeleteStudent(s.id)}>×</button>
-                        </div>
+                <div className="admin__table-wrapper">
+                  <table className="admin__table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Student</th>
+                        <th>Test</th>
+                        <th>Date</th>
+                        <th>Score</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sessions.map((s, i) => (
+                        <tr key={s.id}>
+                          <td>{(recordPage - 1) * PAGE_SIZE + i + 1}</td>
+                          <td className="admin__table-name">{s.student_name}</td>
+                          <td>
+                            <span className="records__test-tag">{s.test_title || '—'}</span>
+                          </td>
+                          <td>{formatDate(s.started_at)}</td>
+                          <td>{s.answered_questions}/{s.total_questions}</td>
+                          <td><span className={`admin__status ${s.completed_at ? 'completed' : 'incomplete'}`}>{s.completed_at ? 'Completed' : 'Incomplete'}</span></td>
+                          <td>
+                            <div className="admin__table-actions">
+                              <button className="btn btn--small btn--outline" onClick={() => setSelectedSession(s)}>
+                                👁️ View
+                              </button>
+                              <button className="btn btn--small admin__btn-delete" onClick={async () => {
+                                const yes = await tauriConfirm('Delete this test record?', { title: 'Delete Record', kind: 'warning' });
+                                if (!yes) return;
+                                await deleteTestSession(s.id);
+                                loadData();
+                              }}>🗑️</button>
+                            </div>
+                          </td>
+                        </tr>
                       ))}
-                    </div>
-                  )}
+                    </tbody>
+                  </table>
                 </div>
-                
-                {sessions.length === 0 ? (
-                  <div className="admin__empty"><span className="admin__empty-icon">📊</span><p>No records yet.</p></div>
-                ) : (
-                  <div className="admin__table-wrapper">
-                    <table className="admin__table">
-                      <thead>
-                        <tr><th>#</th><th>Student</th><th>Date</th><th>Score</th><th>Status</th><th>Actions</th></tr>
-                      </thead>
-                      <tbody>
-                        {sessions.map((s, i) => (
-                          <tr key={s.id}>
-                            <td>{i + 1}</td>
-                            <td className="admin__table-name">{s.student_name}</td>
-                            <td>{formatDate(s.started_at)}</td>
-                            <td>{s.answered_questions}/{s.total_questions}</td>
-                            <td><span className={`admin__status ${s.completed_at ? 'completed' : 'incomplete'}`}>{s.completed_at ? 'Completed' : 'Incomplete'}</span></td>
-                            <td>
-                              <div className="admin__table-actions">
-                                <button className="btn btn--small btn--outline" onClick={() => handleViewSession(s)}>View</button>
-                                <button className="btn btn--small admin__btn-delete" onClick={() => handleDeleteSession(s.id)}>🗑️</button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+                <Pagination
+                  currentPage={recordPage}
+                  totalPages={recordTotalPages}
+                  onPageChange={setRecordPage}
+                />
               </>
             )}
           </div>

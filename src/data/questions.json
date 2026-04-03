@@ -27,7 +27,7 @@
     "id": 4,
     "q_text": "Describe these pictures.",
     "part": "1.2",
-    "image": "/test1.png",
+    "image": "https://i.ibb.co/HfdSYrNJ/test1.png",
     "speaking_timer": 45,
     "prep_timer": 10
   },
@@ -59,7 +59,7 @@
     "id": 8,
     "q_text": "Governments should ban single-use plastics.",
     "part": "3",
-    "image": "/test1_3.png",
+    "image": "https://i.ibb.co/FLFDVrXd/test1-3.png",
     "speaking_timer": 120,
     "prep_timer": 60
   }
