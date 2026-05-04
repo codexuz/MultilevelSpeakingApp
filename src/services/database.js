@@ -234,9 +234,25 @@ export async function deleteQuestions(ids) {
 
 export async function seedTestsFromJson(tests) {
   const d = await getDb();
+  
+  // Check if we already have tests
   const existingTests = await d.select('SELECT COUNT(*) as count FROM tests');
-  if (existingTests[0].count > 0) return; // Already seeded
+  
+  // If we only have the old "Multilevel Mock Test", we clear it to allow proper CEFR tests seeding
+  if (existingTests[0].count === 1) {
+    const mockTests = await d.select("SELECT id FROM tests WHERE title = 'Multilevel Mock Test'");
+    if (mockTests.length > 0) {
+      await deleteTest(mockTests[0].id);
+      // Reset existingTests count so we proceed to seed
+      existingTests[0].count = 0;
+    }
+  }
 
+  if (existingTests[0].count > 0) return; // Already seeded with real data
+  await syncTestsFromJson(tests);
+}
+
+export async function syncTestsFromJson(tests) {
   for (const test of tests) {
     const testId = await addTest(
       test.title, 
@@ -247,23 +263,25 @@ export async function seedTestsFromJson(tests) {
     
     if (test.questions && Array.isArray(test.questions)) {
       for (const q of test.questions) {
-        await addQuestion(testId, q);
+        // Normalize part IDs to match app logic (1.1, 1.2, 2, 3)
+        let normalizedPart = q.part;
+        if (q.part === 'Part 1' || q.part === 'part1' || q.part === '1') {
+          normalizedPart = q.image ? '1.2' : '1.1';
+        } else if (q.part === 'Part 2' || q.part === 'part2') {
+          normalizedPart = '2';
+        } else if (q.part === 'Part 3' || q.part === 'part3') {
+          normalizedPart = '3';
+        }
+        
+        await addQuestion(testId, {
+          ...q,
+          part: normalizedPart
+        });
       }
     }
   }
 }
 
-// Deprecated, use seedTestsFromJson
-export async function seedQuestionsFromJson(questions) {
-  const d = await getDb();
-  const existingQuestions = await d.select('SELECT COUNT(*) as count FROM questions');
-  if (existingQuestions[0].count > 0) return;
-
-  const testId = await addTest('Multilevel Mock Test', 'Seed data');
-  for (const q of questions) {
-    await addQuestion(testId, q);
-  }
-}
 
 // ─── Students ───────────────────────────────────────────────
 export async function getAllStudents() {

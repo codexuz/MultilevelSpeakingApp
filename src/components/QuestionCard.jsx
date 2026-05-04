@@ -17,6 +17,7 @@ const PART_COLORS = {
 
 export default function QuestionCard({ question, isActive }) {
   const [imgSrc, setImgSrc] = useState(null);
+  const [isLightboxOpen, setIsLightboxOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -29,6 +30,8 @@ export default function QuestionCard({ question, isActive }) {
     }
     return () => { active = false; };
   }, [question?.image]);
+
+  const toggleLightbox = () => setIsLightboxOpen(!isLightboxOpen);
 
   if (!question) return null;
 
@@ -45,7 +48,7 @@ export default function QuestionCard({ question, isActive }) {
       </div>
 
       {imgSrc && (
-        <div className="question-card__image-wrapper">
+        <div className="question-card__image-wrapper" onClick={toggleLightbox} style={{ cursor: 'zoom-in' }}>
           <img
             src={imgSrc}
             alt="Visual prompt"
@@ -76,6 +79,16 @@ export default function QuestionCard({ question, isActive }) {
           <span>Speak: {question.speaking_timer}s</span>
         </div>
       </div>
+
+      {/* Lightbox Overlay */}
+      {isLightboxOpen && (
+        <div className="lightbox" onClick={toggleLightbox}>
+          <div className="lightbox__content" onClick={(e) => e.stopPropagation()}>
+            <img src={imgSrc} alt="Full size view" className="lightbox__image" />
+            <button className="lightbox__close" onClick={toggleLightbox}>✕</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

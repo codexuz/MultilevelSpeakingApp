@@ -22,6 +22,7 @@ import {
   getTestsPaginated,
   getStudentsPaginated,
   getTestSessionsFiltered,
+  syncTestsFromJson,
 } from '../services/database';
 import { pickAndSaveImage, resolveImagePath, resolveAudioPath } from '../services/storage';
 import * as XLSX from 'xlsx';
@@ -701,65 +702,26 @@ export default function AdminDashboard({ onLogout }) {
     setTimeout(() => setSettingsMsg(''), 3000);
   };
 
-  // ─── Bulk Upload ───────────────────────────────────────────────
+  // ─── Bulk Upload Tests (JSON) ──────────────────────────────────
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
-    if (!file || !selectedTest) return;
+    if (!file) return;
 
     setIsUploading(true);
     try {
-      const isJson = file.name.endsWith('.json');
-      const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
+      const text = await file.text();
+      const parsedTests = JSON.parse(text);
 
-      let parsedQuestions = [];
-
-      if (isJson) {
-        const text = await file.text();
-        parsedQuestions = JSON.parse(text);
-      } else if (isExcel) {
-        const buffer = await file.arrayBuffer();
-        const workbook = XLSX.read(buffer, { type: 'array' });
-        const sheetName = workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
-        parsedQuestions = XLSX.utils.sheet_to_json(sheet);
+      if (!Array.isArray(parsedTests)) {
+        throw new Error('Data is not an array of tests');
       }
 
-      if (!Array.isArray(parsedQuestions)) {
-        if (parsedQuestions.questions && Array.isArray(parsedQuestions.questions)) {
-          parsedQuestions = parsedQuestions.questions;
-        } else {
-          throw new Error('Data is not an array');
-        }
-      }
-
-      let addedCount = 0;
-      for (const row of parsedQuestions) {
-        const qText = row.q_text || row.question || row.text || row.Question || row.Text || row['Question Text'];
-        if (!qText) continue;
-
-        let part = String(row.part || row.Part || '1.1');
-        if (part === '1' || part === '1.0') part = '1.1';
-        
-        const prep = parseInt(row.prep_timer || row.prep || row.Prep || row['Prep Timer']) || 5;
-        const speak = parseInt(row.speaking_timer || row.speak || row.Speak || row['Speaking Timer']) || 30;
-
-        await addQuestion(selectedTest.id, {
-          q_text: String(qText).trim(),
-          part: part,
-          image: null,
-          prep_timer: prep,
-          speaking_timer: speak
-        });
-        addedCount++;
-      }
-
-      alert(`✅ Successfully Bulk Uploaded ${addedCount} questions!`);
-      const updatedQs = await getQuestionsByTestId(selectedTest.id);
-      setQuestions(updatedQs);
-
+      await syncTestsFromJson(parsedTests);
+      alert(`✅ Successfully synced ${parsedTests.length} tests with database!`);
+      await loadData();
     } catch (err) {
       console.error('Upload Error:', err);
-      alert('❌ Failed to parse file. Make sure it is a valid JSON or Excel file layout.');
+      alert('❌ Failed to parse or sync JSON file. Make sure it is a valid tests.json file.');
     } finally {
       setIsUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -769,23 +731,29 @@ export default function AdminDashboard({ onLogout }) {
   const handleDownloadTemplate = async () => {
     try {
       const data = [
-        { q_text: 'Describe a memorable journey you have made.', part: '2', prep_timer: 60, speaking_timer: 120 },
-        { q_text: 'What are the most popular modes of transport in your country?', part: '3', prep_timer: 0, speaking_timer: 30 },
-        { q_text: 'What is your full name?', part: '1.1', prep_timer: 5, speaking_timer: 20 }
+        {
+          title: "Sample CEFR Test 1",
+          description: "Description of the test",
+          testType: "cefr",
+          isPublished: true,
+          questions: [
+            { qText: "What is your favorite hobby?", part: "1.1", prepTimer: 5, speakingTimer: 30 },
+            { qText: "Describe this image.", part: "1.2", image: null, prepTimer: 10, speakingTimer: 45 }
+          ]
+        }
       ];
-      const ws = XLSX.utils.json_to_sheet(data);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, 'Questions');
       
-      const excelBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+      const jsonString = JSON.stringify(data, null, 2);
+      const encoder = new TextEncoder();
+      const uint8Array = encoder.encode(jsonString);
       
       const filePath = await save({
-        filters: [{ name: 'Excel Workbook', extensions: ['xlsx'] }],
-        defaultPath: 'Questions_Template.xlsx'
+        filters: [{ name: 'JSON file', extensions: ['json'] }],
+        defaultPath: 'tests_template.json'
       });
 
       if (filePath) {
-        await writeFile(filePath, new Uint8Array(excelBuffer));
+        await writeFile(filePath, uint8Array);
         alert('✅ Template saved successfully!');
       }
     } catch (err) {
@@ -929,6 +897,19 @@ export default function AdminDashboard({ onLogout }) {
                       onChange={(val) => setTestSearch(val)}
                       placeholder="Search tests..."
                     />
+                    <button className="btn btn--outline" onClick={handleDownloadTemplate}>
+                      ⬇️ Template
+                    </button>
+                    <input 
+                      type="file" 
+                      accept=".json" 
+                      style={{ display: 'none' }} 
+                      ref={fileInputRef} 
+                      onChange={handleFileUpload} 
+                    />
+                    <button className="btn btn--outline" onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
+                      {isUploading ? '⏳ Uploading...' : '📁 Upload tests.json'}
+                    </button>
                     <button className="btn btn--primary" onClick={() => { resetTestForm(); setShowTestModal(true); }}>
                       + Create New Test
                     </button>
@@ -991,19 +972,6 @@ export default function AdminDashboard({ onLogout }) {
                     )}
                   </div>
                   <div style={{ display: 'flex', gap: '12px' }}>
-                    <button className="btn btn--outline" onClick={handleDownloadTemplate}>
-                      ⬇️ Template
-                    </button>
-                    <input 
-                      type="file" 
-                      accept=".json, .xlsx, .xls" 
-                      style={{ display: 'none' }} 
-                      ref={fileInputRef} 
-                      onChange={handleFileUpload} 
-                    />
-                    <button className="btn btn--outline" onClick={() => fileInputRef.current?.click()} disabled={isUploading}>
-                      {isUploading ? '⏳ Uploading...' : '📁 Bulk Upload'}
-                    </button>
                     <button className="btn btn--primary" onClick={() => { resetQuestionForm(); setShowQuestionModal(true); }}>
                       + Add Question
                     </button>
