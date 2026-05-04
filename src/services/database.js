@@ -9,6 +9,37 @@ export async function getDb() {
   return db;
 }
 
+// ─── Helpers ───────────────────────────────────────────────
+function mapQuestion(q) {
+  if (!q) return q;
+  let sampleAnswers = [];
+  try {
+    sampleAnswers = q.sample_answers ? JSON.parse(q.sample_answers) : [];
+  } catch (e) {
+    console.error('Failed to parse sample_answers:', e);
+  }
+  
+  return {
+    ...q,
+    qText: q.q_text,
+    speakingTimer: q.speaking_timer,
+    prepTimer: q.prep_timer,
+    testId: q.test_id,
+    audioUrl: q.audio_url,
+    sampleAnswers: sampleAnswers
+  };
+}
+
+function mapTest(t, questions = []) {
+  if (!t) return t;
+  return {
+    ...t,
+    testType: t.test_type,
+    isPublished: t.is_published === 1 || t.is_published === true,
+    questions: questions
+  };
+}
+
 // ─── App Settings ───────────────────────────────────────────
 export async function getSetting(key, defaultValue = null) {
   const d = await getDb();
@@ -52,16 +83,25 @@ export async function updateAdminPassword(newPassword) {
 // ─── Tests ──────────────────────────────────────────────────
 export async function getAllTests() {
   const d = await getDb();
-  return await d.select('SELECT * FROM tests ORDER BY created_at DESC');
+  const tests = await d.select('SELECT * FROM tests ORDER BY created_at DESC');
+  const results = [];
+  for (const test of tests) {
+    const questions = await getQuestionsByTestId(test.id);
+    results.push(mapTest(test, questions));
+  }
+  return results;
 }
 
 export async function getTestsPaginated(page = 1, limit = 10, search = '') {
   const d = await getDb();
   const offset = (page - 1) * limit;
   
+  let rows;
+  let total;
+
   if (search.trim()) {
     const searchLike = `%${search.trim()}%`;
-    const rows = await d.select(
+    rows = await d.select(
       `SELECT * FROM tests WHERE title LIKE $1 OR description LIKE $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`,
       [searchLike, limit, offset]
     );
@@ -69,31 +109,39 @@ export async function getTestsPaginated(page = 1, limit = 10, search = '') {
       `SELECT COUNT(*) as total FROM tests WHERE title LIKE $1 OR description LIKE $1`,
       [searchLike]
     );
-    return { rows, total: countResult[0].total };
+    total = countResult[0].total;
+  } else {
+    rows = await d.select(
+      `SELECT * FROM tests ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    );
+    const countResult = await d.select(`SELECT COUNT(*) as total FROM tests`);
+    total = countResult[0].total;
   }
-  
-  const rows = await d.select(
-    `SELECT * FROM tests ORDER BY created_at DESC LIMIT $1 OFFSET $2`,
-    [limit, offset]
-  );
-  const countResult = await d.select(`SELECT COUNT(*) as total FROM tests`);
-  return { rows, total: countResult[0].total };
+
+  const results = [];
+  for (const row of rows) {
+    const questions = await getQuestionsByTestId(row.id);
+    results.push(mapTest(row, questions));
+  }
+
+  return { rows: results, total };
 }
 
-export async function addTest(title, description) {
+export async function addTest(title, description, testType = 'cefr', isPublished = true) {
   const d = await getDb();
   const result = await d.execute(
-    'INSERT INTO tests (title, description) VALUES ($1, $2)',
-    [title, description]
+    'INSERT INTO tests (title, description, test_type, is_published) VALUES ($1, $2, $3, $4)',
+    [title, description, testType, isPublished ? 1 : 0]
   );
   return result.lastInsertId;
 }
 
-export async function updateTest(id, title, description) {
+export async function updateTest(id, title, description, testType = 'cefr', isPublished = true) {
   const d = await getDb();
   await d.execute(
-    'UPDATE tests SET title = $1, description = $2 WHERE id = $3',
-    [title, description, id]
+    'UPDATE tests SET title = $1, description = $2, test_type = $3, is_published = $4 WHERE id = $5',
+    [title, description, testType, isPublished ? 1 : 0, id]
   );
 }
 
@@ -115,28 +163,60 @@ export async function deleteTests(ids) {
 // ─── Questions ──────────────────────────────────────────────
 export async function getAllQuestions() {
   const d = await getDb();
-  return await d.select('SELECT * FROM questions ORDER BY part, id');
+  const rows = await d.select('SELECT * FROM questions ORDER BY part, id');
+  return rows.map(mapQuestion);
 }
 
 export async function getQuestionsByTestId(testId) {
   const d = await getDb();
-  return await d.select('SELECT * FROM questions WHERE test_id = $1 ORDER BY part, id', [testId]);
+  const rows = await d.select('SELECT * FROM questions WHERE test_id = $1 ORDER BY part, id', [testId]);
+  return rows.map(mapQuestion);
 }
 
 export async function addQuestion(testId, question) {
   const d = await getDb();
+  const qText = question.qText || question.q_text;
+  const speakingTimer = question.speakingTimer || question.speaking_timer;
+  const prepTimer = question.prepTimer || question.prep_timer;
+  const audioUrl = question.audioUrl || question.audio_url;
+  const sampleAnswers = question.sampleAnswers || question.sample_answers;
+
   const result = await d.execute(
-    'INSERT INTO questions (test_id, q_text, part, image, speaking_timer, prep_timer) VALUES ($1, $2, $3, $4, $5, $6)',
-    [testId, question.q_text, question.part, question.image || null, question.speaking_timer, question.prep_timer]
+    'INSERT INTO questions (test_id, q_text, part, image, speaking_timer, prep_timer, audio_url, sample_answers) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
+    [
+      testId, 
+      qText, 
+      question.part, 
+      question.image || null, 
+      speakingTimer, 
+      prepTimer, 
+      audioUrl || null, 
+      sampleAnswers ? JSON.stringify(sampleAnswers) : '[]'
+    ]
   );
   return result.lastInsertId;
 }
 
 export async function updateQuestion(id, question) {
   const d = await getDb();
+  const qText = question.qText || question.q_text;
+  const speakingTimer = question.speakingTimer || question.speaking_timer;
+  const prepTimer = question.prepTimer || question.prep_timer;
+  const audioUrl = question.audioUrl || question.audio_url;
+  const sampleAnswers = question.sampleAnswers || question.sample_answers;
+
   await d.execute(
-    'UPDATE questions SET q_text = $1, part = $2, image = $3, speaking_timer = $4, prep_timer = $5 WHERE id = $6',
-    [question.q_text, question.part, question.image || null, question.speaking_timer, question.prep_timer, id]
+    'UPDATE questions SET q_text = $1, part = $2, image = $3, speaking_timer = $4, prep_timer = $5, audio_url = $6, sample_answers = $7 WHERE id = $8',
+    [
+      qText, 
+      question.part, 
+      question.image || null, 
+      speakingTimer, 
+      prepTimer, 
+      audioUrl || null, 
+      sampleAnswers ? JSON.stringify(sampleAnswers) : '[]', 
+      id
+    ]
   );
 }
 
@@ -152,26 +232,36 @@ export async function deleteQuestions(ids) {
   await d.execute(`DELETE FROM questions WHERE id IN (${placeholders})`, ids);
 }
 
+export async function seedTestsFromJson(tests) {
+  const d = await getDb();
+  const existingTests = await d.select('SELECT COUNT(*) as count FROM tests');
+  if (existingTests[0].count > 0) return; // Already seeded
+
+  for (const test of tests) {
+    const testId = await addTest(
+      test.title, 
+      test.description, 
+      test.testType || 'cefr', 
+      test.isPublished !== undefined ? test.isPublished : true
+    );
+    
+    if (test.questions && Array.isArray(test.questions)) {
+      for (const q of test.questions) {
+        await addQuestion(testId, q);
+      }
+    }
+  }
+}
+
+// Deprecated, use seedTestsFromJson
 export async function seedQuestionsFromJson(questions) {
   const d = await getDb();
   const existingQuestions = await d.select('SELECT COUNT(*) as count FROM questions');
-  if (existingQuestions[0].count > 0) return; // Already seeded
+  if (existingQuestions[0].count > 0) return;
 
-  // Create a default test if none exists
-  let testId;
-  const existingTests = await d.select('SELECT id FROM tests LIMIT 1');
-  if (existingTests.length === 0) {
-    const result = await d.execute('INSERT INTO tests (title, description) VALUES ($1, $2)', ['Multilevel Mock Test', 'Seed data']);
-    testId = result.lastInsertId;
-  } else {
-    testId = existingTests[0].id;
-  }
-
+  const testId = await addTest('Multilevel Mock Test', 'Seed data');
   for (const q of questions) {
-    await d.execute(
-      'INSERT INTO questions (test_id, q_text, part, image, speaking_timer, prep_timer) VALUES ($1, $2, $3, $4, $5, $6)',
-      [testId, q.q_text, q.part, q.image || null, q.speaking_timer, q.prep_timer]
-    );
+    await addQuestion(testId, q);
   }
 }
 

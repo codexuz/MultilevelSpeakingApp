@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import initialQuestions from './data/questions.json';
+import initialTests from './data/cefr_tests.json';
 import QuestionCard from './components/QuestionCard';
 import CircleTimer from './components/CircleTimer';
 import AudioVisualizer from './components/AudioVisualizer';
@@ -12,7 +12,7 @@ import { saveAudioRecording } from './services/storage';
 import {
   verifyStudentPassword,
   verifyAdminPassword,
-  seedQuestionsFromJson,
+  seedTestsFromJson,
   getAllQuestions,
   getAllTests,
   getQuestionsByTestId,
@@ -56,8 +56,8 @@ function App() {
   useEffect(() => {
     async function init() {
       try {
-        // Seed default questions from JSON on first run
-        await seedQuestionsFromJson(initialQuestions);
+        // Seed default tests from JSON on first run
+        await seedTestsFromJson(initialTests);
         
         // Load tests from DB
         const dbTests = await getAllTests();
@@ -154,9 +154,8 @@ function App() {
   }, [reloadData]);
 
   // ─── Test Flow ──────────────────────────────────────────────
-  const handleSelectTest = useCallback(async (test) => {
-    const testQs = await getQuestionsByTestId(test.id);
-    setQuestions(testQs);
+  const handleSelectTest = useCallback((test) => {
+    setQuestions(test.questions || []);
     setSelectedTest(test);
   }, []);
 

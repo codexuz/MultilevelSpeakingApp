@@ -75,6 +75,17 @@ pub fn run() {
       ",
       kind: MigrationKind::Up,
     },
+    Migration {
+      version: 3,
+      description: "add test_type, is_published to tests and audio_url, sample_answers to questions",
+      sql: "
+        ALTER TABLE tests ADD COLUMN test_type TEXT DEFAULT 'cefr';
+        ALTER TABLE tests ADD COLUMN is_published INTEGER DEFAULT 1;
+        ALTER TABLE questions ADD COLUMN audio_url TEXT;
+        ALTER TABLE questions ADD COLUMN sample_answers TEXT;
+      ",
+      kind: MigrationKind::Up,
+    },
   ];
 
   tauri::Builder::default()
